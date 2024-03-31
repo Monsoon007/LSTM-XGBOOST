@@ -5,15 +5,17 @@ import numpy as np
 from gm.api import *
 import pandas as pd
 import sys
-#from hmmlearn.hmm import GaussianHMM # 选择的HMM模型
+# from hmmlearn.hmm import GaussianHMM # 选择的HMM模型
 import logging
 import itertools
-#from scipy.stats import boxcox #正态变换
+# from scipy.stats import boxcox #正态变换
 from sklearn.cluster import KMeans
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense,Dropout,LSTM
+from tensorflow.keras.layers import Dense, Dropout, LSTM
 import random
+
+
 # random.seed(1)
 
 def init(context):
@@ -27,7 +29,7 @@ def init(context):
     # 股票标的
     # context.symbol = 'SHSE.600519'
     context.symbol = 'SHSE.510300'
-    # random.seed(1)
+    random.seed(3074)
     # # 历史窗口长度
     # context.history_len = 10
 
@@ -36,12 +38,12 @@ def init(context):
 
     # 训练样本长度
     context.training_len = 200
-    context.T = 3 # 预测未来T天的收益率
+    context.T = 3  # 预测未来T天的收益率
 
     # 初始化时添加相关的控制变量
     context.include_macro_data = False  # 控制是否合并宏观数据
     context.include_tech_data = True  # 控制是否合并技术指标数据
-    context.include_sent_data = True  # 控制是否合并情绪数据
+    context.include_sent_data = True # 控制是否合并情绪数据
 
     # 止盈幅度
     context.earn_rate = 0.10
@@ -50,8 +52,6 @@ def init(context):
     context.sell_rate = -0.10
 
     context.commission_ratio = 0.0001
-
-
 
     context.percent = 0
 
@@ -96,7 +96,6 @@ def init(context):
     # tech_data.index = pd.to_datetime(tech_data.index)
 
 
-
 def algo(context):
     now = context.now
     # 上一交易日
@@ -108,6 +107,7 @@ def algo(context):
     last_N_date = get_previous_N_trading_date(last_date, counts=context.training_len, exchanges='SHSE')
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
+
     print(">>>>>>>>>>>\n")
     print(str(now) + "\n")
     # try:
@@ -126,7 +126,7 @@ def algo(context):
                              position_side=PositionSide_Long)
         print("多仓percent")
         print(context.percent)
-        print("多仓volume")
+        # print("多仓volume")
         # print(position.volume)
     # 若预测下跌则清仓
     if prediction == -1 and position:
@@ -137,14 +137,22 @@ def algo(context):
         print(context.percent)
         print("空仓volume")
 
+
+
+
+    todayClose = history(context.symbol, frequency='1d', start_time=now, end_time=now, fill_missing='last',
+                         df=True).set_index('eob').close
     # print("流程正确")
+    # print(todayClose)
+    # # 暂停，等待确认
+    # input("Press Enter to continue...")
     # 当涨幅大于10%,平掉所有仓位止盈
-    if position and context.close / position['vwap'] >= 1 + context.earn_rate:
+    if position and len(position) > 0 and todayClose.item() / position['vwap'] >= 1 + context.earn_rate:
         order_close_all()
         print("触发止盈")
 
     # 当跌幅大于10%时,平掉所有仓位止损
-    if position and context.close / position['vwap'] < 1 + context.sell_rate:
+    if position and len(position) > 0 and todayClose.item() / position['vwap'] < 1 + context.sell_rate:
         order_close_all()
         print("触发止损")
 
@@ -183,10 +191,12 @@ def on_order_status(context, order):  # 用于打印交易信息
 
 
 def LSTM_predict(context, start_date, end_date):
+
+
     return_upper = 0.002
     return_lower = -0.002
 
-    traning_days = 40 # 取过去N天的数据作训练输入,注意和training_len区分
+    traning_days = 40  # 取过去N天的数据作训练输入,注意和training_len区分
     T = context.T
     # 获得数据
     trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',
@@ -198,7 +208,6 @@ def LSTM_predict(context, start_date, end_date):
     # 在这里修改数据，加入宏观数据
     trade_data.index = pd.to_datetime(trade_data.index).date
 
-
     # 根据context中的控制变量决定是否合并宏观数据
     if context.include_macro_data:
         trade_data = trade_data.merge(context.macro_data, how='left', left_index=True, right_index=True)
@@ -208,7 +217,6 @@ def LSTM_predict(context, start_date, end_date):
     # 根据context中的控制变量决定是否合并情绪数据
     if context.include_sent_data:
         trade_data = trade_data.merge(context.sent_data, how='left', left_index=True, right_index=True)
-
 
     # 收益率
     return_T = pd.array(np.log(trade_data['close'].shift(-T) / trade_data['close']) / T)
@@ -256,7 +264,8 @@ def LSTM_predict(context, start_date, end_date):
 
     # 进行训练
     epochs1 = 50
-    model.fit(X[:-T], Y[:-T], epochs=epochs1, batch_size=16, verbose=1) # verbose=1表示输出训练过程；verbose=0表示不输出训练过程；verbose=2表示每个epoch输出一行
+    model.fit(X[:-T], Y[:-T], epochs=epochs1, batch_size=16,
+              verbose=2)  # verbose=1表示输出训练过程；verbose=0表示不输出训练过程；verbose=2表示每个epoch输出一行
 
     # 预测价格
     predict_recent_return = model.predict(X[-T:])
@@ -291,8 +300,8 @@ def get_previous_N_trading_date(date, counts=1, exchanges='SHSE'):
     if isinstance(date, str) and len(date) == 10:
         date = datetime.datetime.strptime(date, '%Y-%m-%d')
     previous_N_trading_date = \
-    get_trading_dates(exchange=exchanges, start_date=date - datetime.timedelta(days=max(counts + 30, counts * 2)),
-                      end_date=date)[-counts]
+        get_trading_dates(exchange=exchanges, start_date=date - datetime.timedelta(days=max(counts + 30, counts * 2)),
+                          end_date=date)[-counts]
     return previous_N_trading_date
 
 
@@ -304,6 +313,7 @@ def on_backtest_finished(context, indicator):
     # pd.DataFrame(context.most_probable).to_csv('most_outcomes.csv')
     print('*' * 50)
     print('回测已完成，请通过右上角“回测历史”功能查询详情。')
+
 
 if __name__ == '__main__':
     '''
@@ -323,11 +333,10 @@ if __name__ == '__main__':
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time='2020-03-01 08:00:00',
-        backtest_end_time='2020-09-01 16:00:00',
+        backtest_start_time='2019-02-28 08:00:00',
+        backtest_end_time='2020-02-28 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
         backtest_slippage_ratio=0.0001,
         backtest_match_mode=1)
-

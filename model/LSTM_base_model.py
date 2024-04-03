@@ -77,6 +77,19 @@ def validate(model, device, val_loader, criterion, writer, epoch):
 
 
 def main():
+    # 创建一个带有当前时间戳的日志目录
+    current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
+    log_dir = f'runs/lstm_experiment_{current_time}'
+    writer = SummaryWriter(log_dir)
+    # 启动TensorBoard
+    # tensorboard --logdir=runs
+
+    # 定义TensorBoard启动的命令
+    tensorboard_command = 'tensorboard --logdir=runs'
+    # 使用subprocess.Popen来非阻塞地启动TensorBoard
+    process = subprocess.Popen(tensorboard_command, shell=True)
+
+
     symbol = 'SHSE.510300'
     train_start_date = '2006-01-01'
     train_end_date = '2020-01-01'

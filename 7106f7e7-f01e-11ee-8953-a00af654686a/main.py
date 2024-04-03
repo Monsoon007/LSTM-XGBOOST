@@ -275,20 +275,7 @@ def LSTM_predict(context, start_date, end_date):
 
 
 
-def get_previous_N_trading_date(date, counts=1, exchanges='SHSE'):
-    """
-    获取end_date前N个交易日,end_date为datetime格式，包括date日期
-    :param date：目标日期
-    :param counts：历史回溯天数，默认为1，即前一天
-    """
-    if isinstance(date, str) and len(date) > 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
-    if isinstance(date, str) and len(date) == 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d')
-    previous_N_trading_date = \
-        get_trading_dates(exchange=exchanges, start_date=date - datetime.timedelta(days=max(counts + 30, counts * 2)),
-                          end_date=date)[-counts]
-    return previous_N_trading_date
+
 
 
 def on_backtest_finished(context, indicator):

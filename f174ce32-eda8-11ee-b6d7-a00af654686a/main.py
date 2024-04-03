@@ -10,16 +10,19 @@ import logging
 import itertools
 # from scipy.stats import boxcox #正态变换
 from sklearn.cluster import KMeans
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, LSTM
+from sklearn.preprocessing import MinMaxScaler
+# import tensorflow as tf
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.layers import Dense, Dropout, LSTM
 import random
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
 
 # random.seed(1)
 
 def init(context):
-    print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
     # 每天14:50 定时执行algo任务,
     # algo执行定时任务函数，只能传context参数
     # date_rule执行频率，目前暂时支持1d、1w、1m，其中1w、1m仅用于回测，实时模式1d以上的频率，需要在algo判断日期
@@ -29,7 +32,7 @@ def init(context):
     # 股票标的
     # context.symbol = 'SHSE.600519'
     context.symbol = 'SHSE.510300'
-    random.seed(3074)
+    random.seed(1)
     # # 历史窗口长度
     # context.history_len = 10
 
@@ -222,19 +225,34 @@ def LSTM_predict(context, start_date, end_date):
     return_T = pd.array(np.log(trade_data['close'].shift(-T) / trade_data['close']) / T)
     trade_data.insert(loc=len(trade_data.columns), column='return' + str(T), value=return_T)
     # test_data = trade_data.iloc[-T:]
-    # 归一化
-    min_td = np.min(trade_data['return' + str(T)])
-    max_td = np.max(trade_data['return' + str(T)])
-    trade_data = trade_data.apply(lambda x: (x - min(x)) / (max(x) - min(x) + np.exp(-10)))
-    # 用60天的数据来预测下一天的数据
-    # 举个例子 x[0]是0~59天的股价 y[0]是第60天的股价
+
+    # 删除包含NaN的行
+    trade_data.dropna(inplace=True)
+
+    # 初始化X和Y
     X = []
     Y = []
-    for i in range(trade_data.shape[0] - traning_days):
-        # 全部columns作为特征，除了最后一列收益率
-        X.append(np.array(trade_data.iloc[i:(i + traning_days), :-1].values, dtype=np.float64))
-        # 选择return作为标签输出
-        Y.append(np.array(trade_data.iloc[(i + traning_days), -1], dtype=np.float64))
+    # 保存最大最小值
+    min_values = []
+    max_values = []
+
+    # 滚动窗口归一化并准备数据
+    for i in range(len(trade_data) - traning_days):
+        # 获取当前窗口的数据
+        window_data = trade_data.iloc[i:(i + traning_days)]
+
+        # 对当前窗口的数据进行归一化
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(window_data)
+
+        # 添加到X和Y中
+        X.append(scaled_data[:-1, :-1])  # 使用窗口中的前(traning_days-1)天作为特征
+        Y.append(scaled_data[-1, -1])  # 使用窗口的最后一天的收益率作为标签
+
+        min_values.append(window_data.iloc[:, -1].min())  # 保存当前窗口的最小值
+        max_values.append(window_data.iloc[:, -1].max())  # 保存当前窗口的最大值
+
+    # 转换为numpy数组
     X = np.array(X)
     Y = np.array(Y)
 
@@ -247,30 +265,69 @@ def LSTM_predict(context, start_date, end_date):
     max_return = np.max(returns)
     min_return = np.min(returns)
 
-    # 搭建模型
-    # 3层LSTM，对于每一个LSTM，加入dropout防止过拟合，最后1层全连接用来输出
-    # 输入数据是60长度7维向量组，最后的输出为1个值
-    model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50, return_sequences=True))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50))
-    model.add(Dropout(0.2))
-    model.add(Dense(units=1))
+    # 检查CUDA是否可用，并选择设备
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # adam优化 最小二乘损失
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    class LSTMModel(nn.Module):
+        def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
+            super(LSTMModel, self).__init__()
+            self.hidden_dim = hidden_dim
+            self.num_layers = num_layers
 
-    # 进行训练
-    epochs1 = 50
-    model.fit(X[:-T], Y[:-T], epochs=epochs1, batch_size=16,
-              verbose=2)  # verbose=1表示输出训练过程；verbose=0表示不输出训练过程；verbose=2表示每个epoch输出一行
+            self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
+            self.fc = nn.Linear(hidden_dim, output_dim)
 
-    # 预测价格
-    predict_recent_return = model.predict(X[-T:])
-    # 逆归一化
-    predict_recent_return = predict_recent_return * (max_td - min_td + np.exp(-10)) + min_td
+        def forward(self, x):
+            # 初始化隐藏状态和细胞状态
+            h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(device).requires_grad_()
+            c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(device).requires_grad_()
+            out, (hn, cn) = self.lstm(x, (h0.detach(), c0.detach()))
+            out = self.fc(out[:, -1, :])  # 取LSTM最后一个时间步的输出
+            return out
+
+    # 定义模型参数
+    input_dim = X.shape[2]
+    hidden_dim = 50
+    num_layers = 3
+    output_dim = 1
+
+    model = LSTMModel(input_dim, hidden_dim, num_layers, output_dim).to(device)  # 移动模型到GPU
+
+    # 定义损失函数和优化器
+    criterion = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # 准备数据
+    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)  # 移动数据到GPU
+    Y_tensor = torch.tensor(Y.reshape(-1, 1), dtype=torch.float32).to(device)  # 移动数据到GPU
+    train_data = TensorDataset(X_tensor[:-T], Y_tensor[:-T])
+    train_loader = DataLoader(dataset=train_data, batch_size=16, shuffle=True)
+
+    # 训练模型
+    epochs = 50
+    model.train()  # 设置模型为训练模式
+    for epoch in range(epochs):
+        for inputs, targets in train_loader:
+            optimizer.zero_grad()
+            y_pred = model(inputs)
+            loss = criterion(y_pred, targets)
+            loss.backward()
+            optimizer.step()
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch {epoch + 1}, Loss: {loss.item()}')
+
+    # 预测
+    model.eval()  # 设置模型为评估模式
+    with torch.no_grad():
+        X_test_tensor = torch.tensor(X[-T:], dtype=torch.float32).to(device)  # 确保测试数据也在GPU上
+        predicted_returns = model(X_test_tensor)
+        predicted_returns = predicted_returns.cpu().numpy()  # 将预测结果移回CPU
+
+    # 逆归一化（根据需要进行调整）
+    window_index = len(trade_data) - traning_days - 1
+    min_td = min_values[window_index]
+    max_td = max_values[window_index]
+    predict_recent_return = predicted_returns*(max_td - min_td) + min_td
 
     # 判断买入卖出信号
     # if (predict_recent_return[0]* predict_recent_return[1] <0
@@ -283,10 +340,7 @@ def LSTM_predict(context, start_date, end_date):
     else:
         return 0, predict_recent_return, 0  # 震荡
 
-    # states_pctChg = pd.DataFrame(model.means_)[7]
-    # hidden_states_pre = model.predict(trade_macro_data[-1:])
-    # return states_pctChg[hidden_states_pre].values
-    # if np.all(predict_recent_return >return_upper)
+
 
 
 def get_previous_N_trading_date(date, counts=1, exchanges='SHSE'):
@@ -312,7 +366,7 @@ def on_backtest_finished(context, indicator):
     context.predictions.to_csv(filename)
     # pd.DataFrame(context.most_probable).to_csv('most_outcomes.csv')
     print('*' * 50)
-    print('回测已完成，请通过右上角“回测历史”功能查询详情。')
+    # print(indicator)
 
 
 if __name__ == '__main__':
@@ -333,8 +387,8 @@ if __name__ == '__main__':
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time='2019-02-28 08:00:00',
-        backtest_end_time='2020-02-28 16:00:00',
+        backtest_start_time='2020-02-28 08:00:00',
+        backtest_end_time='2020-03-28 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,

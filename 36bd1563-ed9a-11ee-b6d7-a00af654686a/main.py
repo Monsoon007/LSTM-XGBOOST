@@ -13,6 +13,7 @@ from sklearn.cluster import KMeans
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense,Dropout,LSTM
 import random
+
 # random.seed(1)
 
 
@@ -172,12 +173,12 @@ def on_bar(context, bars):
         
         # print("流程正确")
         # 当涨幅大于10%,平掉所有仓位止盈    
-        if position and bar.close/position['vwap'] >= 1+context.earn_rate:
+        if position and bar.close/position[0]['vwap'] >= 1+context.earn_rate:
             order_close_all()
             print("触发止盈")
 
         # 当跌幅大于10%时,平掉所有仓位止损
-        if position and bar.close/position['vwap'] < 1+context.sell_rate :
+        if position and bar.close/position[0]['vwap'] < 1+context.sell_rate :
             order_close_all()
             print("触发止损")
 
@@ -302,10 +303,6 @@ def LSTM_predict(context,start_date,end_date):
     else :
         return 0,predict_recent_return,0#震荡
     
-    # states_pctChg = pd.DataFrame(model.means_)[7]
-    # hidden_states_pre = model.predict(trade_macro_data[-1:])
-    # return states_pctChg[hidden_states_pre].values
-    # if np.all(predict_recent_return >return_upper) 
 
 
 
@@ -330,7 +327,7 @@ def on_backtest_finished(context, indicator):
     context.predictions.to_csv(filename)
     # pd.DataFrame(context.most_probable).to_csv('most_outcomes.csv')
     print( '*' *50)
-    print('回测已完成，请通过右上角“回测历史”功能查询详情。')
+    print(indicator)
 
 
 
@@ -352,8 +349,8 @@ if __name__ == '__main__':
         filename='main.py',
         mode=MODE_BACKTEST,
         token='',
-        backtest_start_time='2019-02-28 08:00:00',
-        backtest_end_time='2020-02-28 16:00:00',
+        backtest_start_time='2020-02-28 08:00:00',
+        backtest_end_time='2020-03-28 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,

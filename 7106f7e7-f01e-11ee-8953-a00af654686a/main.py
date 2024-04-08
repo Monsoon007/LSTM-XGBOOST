@@ -4,23 +4,18 @@ import datetime
 import numpy as np
 from gm.api import *
 import pandas as pd
-import sys
 # from hmmlearn.hmm import GaussianHMM # 选择的HMM模型
-import logging
-import itertools
 # from scipy.stats import boxcox #正态变换
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import MinMaxScaler
-# import tensorflow as tf
-# from tensorflow.keras.models import Sequential
-# from tensorflow.keras.layers import Dense, Dropout, LSTM
 import random
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import multiprocessing
-from itertools import product
 
+from model.LSTM_base_model import best_lstm_model
+from ..data.get_data import get_common_data, my_get_previous_n_trading_date  # 导入位于../data/get_data.py的get_common_data函数
+from model.LSTM_data_handle import data_for_lstm
 
 # random.seed(1)
 
@@ -44,11 +39,6 @@ def init(context):
     # # 训练样本长度
     # context.training_len = 200
     # context.T = 3  # 预测未来T天的收益率
-    #
-    # # 初始化时添加相关的控制变量
-    # context.include_macro_data = False  # 控制是否合并宏观数据
-    # context.include_tech_data = True  # 控制是否合并技术指标数据
-    # context.include_sent_data = True # 控制是否合并情绪数据
 
     # 止盈幅度
     context.earn_rate = 0.10
@@ -109,14 +99,14 @@ def algo(context):
     # print(str(now)+"\n")
     # print(str(last_date)+"\n")
     # N天前的交易日
-    last_N_date = get_previous_N_trading_date(last_date, counts=context.training_len, exchanges='SHSE')
+    last_N_date = my_get_previous_n_trading_date(last_date, counts=context., exchanges='SHSE')
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
 
     print(">>>>>>>>>>>\n")
     print(str(now) + "\n")
     # try:
-    prediction, outcome, limit_return = LSTM_predict(context, last_N_date, last_date)
+    prediction, outcome, limit_return = LSTM_predict(context, last_date)
     df = pd.DataFrame([[now, prediction, outcome[-1], outcome, limit_return]],
                       columns=["date", "prediction", 'return_pre', "return_pre7", 'limit_return'])
     context.predictions = pd.concat([context.predictions, df])
@@ -195,75 +185,13 @@ def on_order_status(context, order):  # 用于打印交易信息
                                                                       price, volume))
 
 
-def LSTM_predict(context, start_date, end_date):
+def LSTM_predict(context, last_date):
 
     return_upper = 0.002
     return_lower = -0.002
-    traning_days = 40  # 取过去N天的数据作训练输入,注意和training_len区分
-    T = context.T
-    # 获得数据
-    trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',
-                         df=True).set_index('eob')
-    # trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',df=True).set_index('eob')
-    # get_history_symbol(symbol=None, start_date=None, end_date=None, df=False)
 
-    trade_data.drop(columns=trade_data.columns[[0, 1, -1, -2]], inplace=True)  # 剔除行情数据中无用数据
-    # 在这里修改数据，加入宏观数据
-    trade_data.index = pd.to_datetime(trade_data.index).date
+    # model和超参数已经在run_strategy中加载
 
-    # 根据context中的控制变量决定是否合并宏观数据
-    if context.include_macro_data:
-        trade_data = trade_data.merge(context.macro_data, how='left', left_index=True, right_index=True)
-    # 根据context中的控制变量决定是否合并技术指标数据
-    if context.include_tech_data:
-        trade_data = trade_data.merge(context.tech_data, how='left', left_index=True, right_index=True)
-    # 根据context中的控制变量决定是否合并情绪数据
-    if context.include_sent_data:
-        trade_data = trade_data.merge(context.sent_data, how='left', left_index=True, right_index=True)
-
-    # 收益率
-    return_T = pd.array(np.log(trade_data['close'].shift(-T) / trade_data['close']) / T)
-    trade_data.insert(loc=len(trade_data.columns), column='return' + str(T), value=return_T)
-    # test_data = trade_data.iloc[-T:]
-
-    # 删除包含NaN的行
-    trade_data.dropna(inplace=True)
-
-    # 初始化X和Y
-    X = []
-    Y = []
-    # 保存最大最小值
-    min_values = []
-    max_values = []
-
-    # 滚动窗口归一化并准备数据
-    for i in range(len(trade_data) - traning_days):
-        # 获取当前窗口的数据
-        window_data = trade_data.iloc[i:(i + traning_days)]
-
-        # 对当前窗口的数据进行归一化
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(window_data)
-
-        # 添加到X和Y中
-        X.append(scaled_data[:-1, :-1])  # 使用窗口中的前(traning_days-1)天作为特征
-        Y.append(scaled_data[-1, -1])  # 使用窗口的最后一天的收益率作为标签
-
-        min_values.append(window_data.iloc[:, -1].min())  # 保存当前窗口的最小值
-        max_values.append(window_data.iloc[:, -1].max())  # 保存当前窗口的最大值
-
-    # 转换为numpy数组
-    X = np.array(X)
-    Y = np.array(Y)
-
-    trade_data.dropna(inplace=True)
-
-    # return_T = pd.array(trade_data['return_'+str(T)])
-    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(
-        trade_data['return' + str(T)].values.reshape(-1, 1))
-    returns = kmeans.cluster_centers_
-    max_return = np.max(returns)
-    min_return = np.min(returns)
 
     # 检查CUDA是否可用，并选择设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -304,7 +232,7 @@ def LSTM_predict(context, start_date, end_date):
     train_loader = DataLoader(dataset=train_data, batch_size=16, shuffle=True)
 
     # 训练模型
-    epochs = 50
+    epochs = 100
     model.train()  # 设置模型为训练模式
     for epoch in range(epochs):
         for inputs, targets in train_loader:
@@ -323,65 +251,49 @@ def LSTM_predict(context, start_date, end_date):
         predicted_returns = model(X_test_tensor)
         predicted_returns = predicted_returns.cpu().numpy()  # 将预测结果移回CPU
 
-    # 逆归一化（根据需要进行调整）
-    window_index = len(trade_data) - traning_days - 1
-    min_td = min_values[window_index]
-    max_td = max_values[window_index]
-    predict_recent_return = predicted_returns*(max_td - min_td) + min_td
 
     # 判断买入卖出信号
     # if (predict_recent_return[0]* predict_recent_return[1] <0
     #   and predict_recent_return[1]* predict_recent_return[2])<0:
     #     return 0,predict_recent_return,0 #震荡
-    if min(predict_recent_return) > return_upper:
-        return 1, predict_recent_return, max_return  # 上涨
-    elif max(predict_recent_return) < return_lower:
-        return -1, predict_recent_return, min_return  # 下跌
+    if min(predicted_returns) > return_upper:
+        return 1, predicted_returns, max_return  # 上涨
+    elif max(predicted_returns) < return_lower:
+        return -1, predicted_returns, min_return  # 下跌
     else:
-        return 0, predict_recent_return, 0  # 震荡
+        return 0, predicted_returns, 0  # 震荡
 
 
 
 
-def get_previous_N_trading_date(date, counts=1, exchanges='SHSE'):
-    """
-    获取end_date前N个交易日,end_date为datetime格式，包括date日期
-    :param date：目标日期
-    :param counts：历史回溯天数，默认为1，即前一天
-    """
-    if isinstance(date, str) and len(date) > 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
-    if isinstance(date, str) and len(date) == 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d')
-    previous_N_trading_date = \
-        get_trading_dates(exchange=exchanges, start_date=date - datetime.timedelta(days=max(counts + 30, counts * 2)),
-                          end_date=date)[-counts]
-    return previous_N_trading_date
+
 
 
 def on_backtest_finished(context, indicator):
     # 回测业绩指标数据
     data = [
-        indicator['pnl_ratio'], indicator['pnl_ratio_annual'],indicator['sharp_ratio'],
+        indicator['pnl_ratio'], indicator['pnl_ratio_annual'], indicator['sharp_ratio'],
         indicator['max_drawdown'], indicator['win_ratio'],
-        context.training_len,context.T,context.withMacro,context.withTech,context.withSent,
     ]
-    # 将超参加入context.result
-    context.result.append(data)
+    print(data)
 
 def run_strategy(training_len, T,withMacro, withTech, withSent):
     # 导入上下文
     from gm.model.storage import context
-    # 训练样本长度
-    context.training_len = training_len
-    context.T =  T  # 预测未来T天的收益率
 
-    # 初始化时添加相关的控制变量
-    context.include_macro_data = withMacro # 控制是否合并宏观数据
-    context.include_tech_data  = withTech # 控制是否合并技术指标数据
-    context.include_sent_data  = withSent # 控制是否合并情绪数据
+    context.model_path,context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=None)
 
-    context.result = [] # context.result用以存储超参·········
+    base_data = get_common_data('SHSE.510300','2007-01-01', '2021-01-01',T)
+    # base_data的最后一列为未来T日的平均日收益率
+
+    # kmeans聚类，用于后续交易时的判断
+    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data[-1].values.reshape(-1, 1))
+    returns = kmeans.cluster_centers_
+    context.max_return = np.max(returns)
+    context.min_return = np.min(returns)
+
+    # # 初始化时添加相关的控制变量
+    # context.result = [] # context.result用以存储超参·········
 
     '''
         strategy_id策略ID, 由系统生成
@@ -414,12 +326,9 @@ if __name__ == '__main__':
     print('构建参数组：')
     paras_list = []
     # 循环输入参数数值回测
-    for training_len in range(50,100,150,200,250):
+    for window_size in range(50,100,150,200,250):
         for T in range(1,3,5,7):
-            for withMacro in range(True,False):
-                for withTech in range(True,False):
-                    for withSent in range(True,False):
-                        paras_list.append([training_len, T, withMacro, withTech, withSent])
+            paras_list.append([window_size, T])
     print(paras_list)
 
     # 多进程并行

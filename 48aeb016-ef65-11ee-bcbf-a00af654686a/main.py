@@ -5,26 +5,17 @@ import numpy as np
 from gm.api import *
 import pandas as pd
 import sys
-#from hmmlearn.hmm import GaussianHMM # 选择的HMM模型
+from hmmlearn.hmm import GaussianHMM # 选择的HMM模型
 import logging
 import itertools
-#from scipy.stats import boxcox #正态变换
+from scipy.stats import boxcox #正态变换
 from sklearn.cluster import KMeans
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense,Dropout,LSTM
-import random
-
-from data.get_data import get_common_data
-
-
-# random.seed(1)
-
 
 def init(context):
     # 股票标的
     # context.symbol = 'SHSE.600519'
     context.symbol = 'SHSE.510300'
-    random.seed(1)
+
     # # 历史窗口长度
     # context.history_len = 10
 
@@ -32,7 +23,7 @@ def init(context):
     # context.forecast_len = 1
 
     # 训练样本长度
-    context.training_len = 200
+    context.training_len = 550 # 150近似最优
 
     # 止盈幅度
     context.earn_rate = 0.10
@@ -42,14 +33,12 @@ def init(context):
 
     context.commission_ratio = 0.0001
 
-    context.T = 10
-    
-    context.percent=0
+    context.T = 7
     
     # 订阅行情
-    # subscribe(symbols=context.symbol, frequency='60s')
+    subscribe(symbols=context.symbol, frequency='60s')
 
-    context.predictions = pd.DataFrame(columns=["date",'return_pre',"return_pre7","outcome",'limit_return'])
+    context.predictions = pd.DataFrame(columns=["date","prediction"])
 
     context.most_probable = []
 
@@ -61,53 +50,14 @@ def init(context):
     # 生成last T days的收益率可能组合
     # 获取目标股票的daily历史行情
 
-    # trade_data = history(context.symbol, frequency='1d', start_time='2016-01-01', end_time='2019-02-01', fill_missing='last',df=True).set_index('eob')
-    # # trade_data['pctChg'] = trade_data['close']/trade_data['pre_close']-1
-    # trade_data.drop(columns=trade_data.columns[[0,1,-1,-2]], inplace=True) # 剔除行情数据中无用数据
 
-
-
-    # 计算 T日收益率（连续复利）
-    #trade_data['return_'+str(context.T)] = np.log(trade_data['close'].shift(-context.T)/trade_data['close'])/context.T
-    #return_T = pd.array(trade_data[:-context.T]['return_'+str(context.T)])
-    #return_T.reshape(-1,1)
-    #kmeans = KMeans(n_clusters=20, random_state=0).fit(return_T.reshape(-1,1))
-    #returns = kmeans.cluster_centers_
-    #returns = returns.reshape(20)
-    #context.outcomes = np.array(list(itertools.product(returns,repeat=context.T))) #遍历组合
-
-    path = "E:\中国移动同步盘\大四\毕业设计\数据"
-    # "E:\中国移动同步盘\大四\毕业设计\数据\macro.csv"
-    macroPath = path + "\macro.csv"
-    sentPath = path + "\sentiment1.7.xlsx"
-    techPath = path + "\\tech.xlsx"
-
-    macro_data = pd.read_csv(macroPath)
-    sent_data = pd.read_excel(sentPath)
-    tech_data = pd.read_excel(techPath)
-
-
-    #macro_data = macro_data.set_index('date').drop(macro_data.columns[[0,18,19]],axis=1)
+    macro_data = pd.read_csv('E:\All Codes\HMM\macro.csv')
     macro_data = macro_data.set_index('date').drop(macro_data.columns[[0,18,19,-1,-2,-4,-5,-6,-7,-8,-9,-10,-11]],axis=1)
     macro_data.index = pd.to_datetime(macro_data.index) 
-    # for column in macro_data.columns:
-    #     if macro_data[column].min() <= 0:
-    #         macro_data[column] = macro_data[column].apply(lambda x:x-macro_data[column].min()+np.exp(-10))
+    for column in macro_data.columns:
+        if macro_data[column].min() <= 0:
+            macro_data[column] = macro_data[column].apply(lambda x:x-macro_data[column].min()+np.exp(-10))
     context.macro_data = macro_data
-
-    #macro_data = macro_data.set_index('date').drop(macro_data.columns[[0,18,19]],axis=1)
-    sent_data = sent_data.set_index('date')
-    sent_data.index = pd.to_datetime(sent_data.index) 
-    context.sent_data = sent_data
-
-    #macro_data = macro_data.set_index('date').drop(macro_data.columns[[0,18,19]],axis=1)
-    tech_data = tech_data.set_index('date')
-    tech_data.index = pd.to_datetime(tech_data.index) 
-    context.tech_data = tech_data
-    
-    #技术指标
-    # tech_data = pd.read_excel('tech.xls').set_index('date')
-    # tech_data.index = pd.to_datetime(tech_data.index) 
 
 def on_bar(context, bars):
     bar = bars[0]
@@ -134,36 +84,23 @@ def on_bar(context, bars):
         position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
         print(">>>>>>>>>>>\n")
         print(str(now)+"\n")
-        #try:
-        prediction,outcome,limit_return= LSTM_predict(context,last_N_date,last_date)
-        df = pd.DataFrame([[now,prediction,outcome[-1],outcome,limit_return]],columns=["date","prediction",'return_pre',"return_pre7",'limit_return'])
-        context.predictions = pd.concat([context.predictions,df])
-
-        print('prediction:'+ str(prediction)+"\n")
-        print('recent_7day_return:') 
-        print(outcome)
-        # 若预测值为上涨且空仓则买入
-        if prediction == 1:
-            context.percent=max(min(200*np.mean(outcome)/limit_return,1),0)
-            order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,position_side=PositionSide_Long)
-            print("多仓percent")
-            print(context.percent)
-            print("多仓volume")
-            #print(position.volume)
-        # 若预测下跌则清仓    
-        if prediction == -1 and position :
-            context.percent=min(np.max(context.percent-np.mean(outcome)/limit_return,0),1)
-            order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,position_side=PositionSide_Long)
-            print("空仓percent")
-            print(context.percent)
-            print("空仓volume")
-            #print(position.volume)
-            # order_close_all()
-        #except:
-            #print("##### Error of LSTM Prediction #######")
+        try:
+            prediction, most_probable_outcome = hmm_predict(context,last_N_date,last_date)
+            df = pd.DataFrame([[now,prediction,most_probable_outcome]],columns=["date","prediction","outcome"])
+            # context.predictions.concat(df)
+            context.predictions = pd.concat([context.predictions,df])
+            print(str(prediction)+"\n")
+            # 若预测值为上涨且空仓则买入
+            if prediction == 1 and not position :
+                order_target_percent(symbol=context.symbol, percent=1, order_type=OrderType_Market,position_side=PositionSide_Long)
+            # 若预测下跌则清仓    
+            if prediction == -1 and position :
+                order_close_all()
+        except:
+            print("##### Error of HMM Prediction #######")
         
-        # prediction, predict_recent_return = hmm_predict(context,last_N_date,last_date)
-        # df = pd.DataFrame([[now,prediction,predict_recent_return]],columns=["date","prediction","outcome"])
+        # prediction, most_probable_outcome = hmm_predict(context,last_N_date,last_date)
+        # df = pd.DataFrame([[now,prediction,most_probable_outcome]],columns=["date","prediction","outcome"])
         # # context.predictions.concat(df)
         # context.predictions = pd.concat([context.predictions,df])
         # print(str(prediction)+"\n")
@@ -176,12 +113,12 @@ def on_bar(context, bars):
         
         # print("流程正确")
         # 当涨幅大于10%,平掉所有仓位止盈    
-        if position and bar.close/position[0]['vwap'] >= 1+context.earn_rate:
+        if position and bar.close/position['vwap'] >= 1+context.earn_rate:
             order_close_all()
             print("触发止盈")
 
         # 当跌幅大于10%时,平掉所有仓位止损
-        if position and bar.close/position[0]['vwap'] < 1+context.sell_rate :
+        if position and bar.close/position['vwap'] < 1+context.sell_rate :
             order_close_all()
             print("触发止损")
 
@@ -217,27 +154,58 @@ def on_order_status(context, order):  #用于打印交易信息
         order_type_word = '限价' if order_type==1 else '市价'
         print('{}:标的：{}，操作：以{}{}，委托价格：{}，委托数量：{}'.format(context.now,symbol,order_type_word,side_effect,price,volume))
        
-def LSTM_predict(context,start_date,end_date):
+def hmm_predict(context,start_date,end_date):
+    """
+    训练HMM模型
+    :param start_date:训练样本开始时间
+    :param end_date:训练样本结束时间
+    """
+    T = context.T
+    # N = 20
+    return_upper = 0.0002
+    return_lower = -0.0002
 
-    return_upper = 0.002
-    return_lower = -0.002
-
-    # model与超参数已经在run_strategy中加载
 
 
-
-    # 判断买入卖出信号
-    # if (predict_recent_return[0]* predict_recent_return[1] <0 
-    #   and predict_recent_return[1]* predict_recent_return[2])<0:
-    #     return 0,predict_recent_return,0 #震荡
-    if min(predict_recent_return) > return_upper :
-        return 1,predict_recent_return,max_return #上涨
-    elif max(predict_recent_return) <return_lower  :
-        return -1,predict_recent_return,min_return#下跌
-    else :
-        return 0,predict_recent_return,0#震荡
+    # 获取目标股票的daily历史行情
+    trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',df=True).set_index('eob')
+    # trade_data['pctChg'] = trade_data['close']/trade_data['pre_close']-1
+    trade_data.drop(columns=trade_data.columns[[0,1,-1,-2]], inplace=True) # 剔除行情数据中无用数据
+    trade_data.index = pd.to_datetime(trade_data.index).date
+    trade_macro_data = trade_data.merge(context.macro_data, how='left', left_index=True, right_index=True)
+    # 计算 T日收益率（连续复利）
+    trade_macro_data['return_'+str(T)] = np.log(trade_macro_data['close']/trade_macro_data['close'].shift(T))/T
+    trade_macro_data.dropna(inplace=True)
+    # trade_data = pd.DataFrame(trade_data['return_'+str(T)])
+    # y, lambda0 = boxcox(x, lmbda=None, alpha=None)
+    for column in trade_macro_data.columns:
+        if column == 'return_'+str(T):
+            continue
+        # print(column)
+        # print(trade_data[column])
+        trade_macro_data[column],__ = boxcox(trade_macro_data[column])
     
 
+    # except:
+    #     return 2 
+    # model = GaussianHMM(n_components=3, covariance_type='diag', n_iter=10000) 
+    model = GaussianHMM(n_components=3,covariance_type='diag', n_iter=10000) 
+
+    model.fit(trade_macro_data)
+    states_pct = model.means_[:,-1]
+
+    hidden_states = model.predict(trade_macro_data[-3:]) #解码最近三天对应的状态
+    
+    outcome = states_pct[hidden_states]
+    if (outcome[0]* outcome[1] <0 
+      and outcome[1]* outcome[2])<0:
+        return 0,outcome #震荡
+    elif outcome[-1] > return_upper :
+        return 1,outcome  #上涨
+    elif np.all(outcome <return_lower)  :
+        return -1,outcome#下跌
+    else :
+        return 0,outcome #震荡
 
 
 def get_previous_N_trading_date(date,counts=1,exchanges='SHSE'):
@@ -261,26 +229,10 @@ def on_backtest_finished(context, indicator):
     context.predictions.to_csv(filename)
     # pd.DataFrame(context.most_probable).to_csv('most_outcomes.csv')
     print( '*' *50)
-    print(indicator)
-
-
+    print('回测已完成，请通过右上角“回测历史”功能查询详情。')
 
 
 if __name__ == '__main__':
-    # 导入上下文
-    from gm.model.storage import context
-
-    context.model_path, context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=None)
-
-    base_data = get_common_data('SHSE.510300', '2007-01-01', '2021-01-01', T)
-    # base_data的最后一列为未来T日的平均日收益率
-
-    # kmeans聚类，用于后续交易时的判断
-    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data[-1].values.reshape(-1, 1))
-    returns = kmeans.cluster_centers_
-    context.max_return = np.max(returns)
-    context.min_return = np.min(returns)
-
     '''
         strategy_id策略ID, 由系统生成
         filename文件名, 请与本文件名保持一致
@@ -293,12 +245,12 @@ if __name__ == '__main__':
         backtest_commission_ratio回测佣金比例
         backtest_slippage_ratio回测滑点比例
         '''
-    run(strategy_id='36bd1563-ed9a-11ee-b6d7-a00af654686a',
+    run(strategy_id='7b16e7ef-6a08-11ed-a326-88aedd1eed07',
         filename='main.py',
         mode=MODE_BACKTEST,
         token='',
-        backtest_start_time='2020-02-28 08:00:00',
-        backtest_end_time='2020-03-28 16:00:00',
+        backtest_start_time='2019-02-28 08:00:00',
+        backtest_end_time='2020-09-10 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,

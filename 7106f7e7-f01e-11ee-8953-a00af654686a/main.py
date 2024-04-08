@@ -12,7 +12,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import multiprocessing
-from ..data.get_data import get_common_data  # 导入位于../data/get_data.py的get_common_data函数
+
+from model.LSTM_base_model import best_lstm_model
+from ..data.get_data import get_common_data, my_get_previous_n_trading_date  # 导入位于../data/get_data.py的get_common_data函数
 from model.LSTM_data_handle import data_for_lstm
 
 # random.seed(1)
@@ -97,14 +99,14 @@ def algo(context):
     # print(str(now)+"\n")
     # print(str(last_date)+"\n")
     # N天前的交易日
-    last_N_date = get_previous_N_trading_date(last_date, counts=context., exchanges='SHSE')
+    last_N_date = my_get_previous_n_trading_date(last_date, counts=context., exchanges='SHSE')
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
 
     print(">>>>>>>>>>>\n")
     print(str(now) + "\n")
     # try:
-    prediction, outcome, limit_return = LSTM_predict(context, last_N_date, last_date)
+    prediction, outcome, limit_return = LSTM_predict(context, last_date)
     df = pd.DataFrame([[now, prediction, outcome[-1], outcome, limit_return]],
                       columns=["date", "prediction", 'return_pre', "return_pre7", 'limit_return'])
     context.predictions = pd.concat([context.predictions, df])
@@ -183,24 +185,13 @@ def on_order_status(context, order):  # 用于打印交易信息
                                                                       price, volume))
 
 
-def LSTM_predict(context, start_date, end_date):
+def LSTM_predict(context, last_date):
 
     return_upper = 0.002
     return_lower = -0.002
-    window_size = 40  # LSTM的输入序列长度
-    T = context.T
 
-    base_data = get_common_data(context.symbol, start_date, end_date, T)
-    # base_data的最后一列为未来T日的平均日收益率
+    # model和超参数已经在run_strategy中加载
 
-    # kmeans聚类，用于后续交易时的判断
-    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data[-1].values.reshape(-1, 1))
-    returns = kmeans.cluster_centers_
-    max_return = np.max(returns)
-    min_return = np.min(returns)
-
-    # 为LSTM模型处理好数据
-    X, Y = data_for_lstm(base_data, window_size)
 
     # 检查CUDA是否可用，并选择设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -281,23 +272,28 @@ def LSTM_predict(context, start_date, end_date):
 def on_backtest_finished(context, indicator):
     # 回测业绩指标数据
     data = [
-        indicator['pnl_ratio'], indicator['pnl_ratio_annual'],indicator['sharp_ratio'],
+        indicator['pnl_ratio'], indicator['pnl_ratio_annual'], indicator['sharp_ratio'],
         indicator['max_drawdown'], indicator['win_ratio'],
-        context.,context.T,context.withMacro,context.withTech,context.withSent,
     ]
-    # 将超参加入context.result
-    context.result.append(data)
+    print(data)
 
 def run_strategy(training_len, T,withMacro, withTech, withSent):
     # 导入上下文
     from gm.model.storage import context
-    # 训练样本长度
-    context. = training_len
-    context.T =  T  # 预测未来T天的平均日收益率
 
-    # 初始化时添加相关的控制变量
+    context.model_path,context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=None)
 
-    context.result = [] # context.result用以存储超参·········
+    base_data = get_common_data('SHSE.510300','2007-01-01', '2021-01-01',T)
+    # base_data的最后一列为未来T日的平均日收益率
+
+    # kmeans聚类，用于后续交易时的判断
+    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data[-1].values.reshape(-1, 1))
+    returns = kmeans.cluster_centers_
+    context.max_return = np.max(returns)
+    context.min_return = np.min(returns)
+
+    # # 初始化时添加相关的控制变量
+    # context.result = [] # context.result用以存储超参·········
 
     '''
         strategy_id策略ID, 由系统生成

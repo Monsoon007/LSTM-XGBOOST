@@ -34,8 +34,11 @@ class LSTMModel(nn.Module):
 
 
 def prepare_data(symbol, start_date, end_date, T, window_size):
+    # print(
+    #     f"Preparing data for symbol: {symbol}, start_date: {start_date}, end_date: {end_date}, T: {T}, window_size: {window_size}")
     data = get_common_data(symbol, start_date, end_date, T)
     X, Y = data_for_lstm(data, window_size)
+    # print(f"Prepared data X: {X}, Y: {Y}")
     return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
 
 
@@ -85,31 +88,14 @@ def validate(model, device, val_loader, criterion, writer, epoch):
 
 
 def main():
-    symbol = 'SHSE.510300'
-    train_start_date = '2008-01-01'
-    train_end_date = '2020-01-01'
-    val_start_date = '2020-01-01'
-    val_end_date = '2021-01-01'
-    test_start_date = '2021-01-01'
-    test_end_date = '2022-01-01'
-
     output_dim = 1
     epochs = 100
     batch_size = 16
     lr = 0.01  # 学习率
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 定义超参数搜索空间
-    T_values = [1, 3, 7, 15, 30]
-    window_sizes = [20, 40, 60, 120]
-    hidden_dims = [30, 50, 70]
-    num_layers_list = [3, 5, 9]
-
     # 用于存储所有最佳模型结果的列表
     best_models_results = []
-
-    # 定义模型保存目录
-    model_save_dir = 'lstm_models'
 
     # 检查模型保存目录是否存在，如果不存在，则创建它
     if not os.path.exists(model_save_dir):
@@ -134,7 +120,7 @@ def main():
 
         # 创建tensorboard writer
         current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
-        log_dir = f'runs/lstm_experiment_{current_time}_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}'
+        log_dir = f'runs_{config_id}/lstm_experiment_{current_time}_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}'
         writer = SummaryWriter(log_dir)
 
         # 准备数据
@@ -158,7 +144,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
         best_val_loss = float("inf")
-        best_model_path = ""
+        best_model_path = "" # 验证集上最佳模型的保存路径
         for epoch in range(epochs):
             train(model, device, train_loader, criterion, optimizer, epoch, writer)
             val_loss = validate(model, device, val_loader, criterion, writer, epoch)
@@ -166,7 +152,7 @@ def main():
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                # 保存当前最佳模型
+                # 保存验证集上最佳模型
                 best_model_path = os.path.join(model_save_dir,
                                                f'best_lstm_model_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}.pth')
                 torch.save(model.state_dict(), best_model_path)
@@ -191,8 +177,107 @@ def main():
 
     # 所有训练完成后，将最佳模型的结果保存到Excel文件中
     results_df = pd.DataFrame(best_models_results)
-    results_df.to_excel('../result/best_models_results.xlsx', index=False)
+    results_df.to_excel(results_path, index=False)
 
+
+def get_lstm_model(T, window_size, hidden_dim, num_layers):
+    """
+    暴露给外部的接口，用于获取指定超参数的LSTM模型地址
+    """
+    # 检查模型保存目录是否存在，如果不存在，则创建它
+    if not os.path.exists(model_save_dir):
+        os.makedirs(model_save_dir)
+
+    # 检查该种参数模型是否已经训练过，如果训练过，则返回该模型地址
+    model_path = os.path.join(model_save_dir,
+                              f'best_lstm_model_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}.pth')
+    if os.path.exists(model_path):
+        return model_path
+    else:
+        raise ValueError('Model not found!')
+
+
+def best_lstm_model(T=None):
+    """
+    获取最佳LSTM模型的地址及其超参数
+    """
+    # 读取最佳模型的结果
+    best_models_results = pd.read_excel(results_path)
+
+    # 如果T==None，则返回所有模型中最佳的模型
+    if T is None:
+        best_model = best_models_results.loc[best_models_results['best_val_loss'].idxmin()]
+    else:
+        # 否则返回T等于指定值的最佳模型
+        best_model = best_models_results.loc[
+            best_models_results[best_models_results['T'] == T]['best_val_loss'].idxmin()]
+
+    # 返回最佳模型及其超参数
+    return best_model['best_model_path'], best_model['T'], best_model['window_size'], best_model['hidden_dim'], \
+        best_model['num_layers']
+
+
+symbol = 'SHSE.510300'
+
+date_config = {
+    'train_start_date': '2008-01-01',
+    'train_end_date': '2020-01-01',
+    'val_start_date': '2020-07-10',
+    'val_end_date': '2022-01-14',
+    'test_start_date': '2022-12-09',
+    'test_end_date': '2023-09-01'
+}
+
+train_start_date = date_config['train_start_date']
+train_end_date = date_config['train_end_date']
+val_start_date = date_config['val_start_date']
+val_end_date = date_config['val_end_date']
+test_start_date = date_config['test_start_date']
+test_end_date = date_config['test_end_date']
+
+param_config = {
+    'T_values': [1, 3, 7, 15, 30],
+    'window_sizes': [20, 40, 60, 120],
+    'hidden_dims': [30, 50, 70],
+    'num_layers_list': [3, 5, 9]
+}
+
+T_values = param_config['T_values']
+window_sizes = param_config['window_sizes']
+hidden_dims = param_config['hidden_dims']
+num_layers_list = param_config['num_layers_list']
+
+# 将config追加保存到configs.xlsx文件中
+configs = {
+    'symbol': symbol,
+    'date_config': str(date_config),
+    'param_config': str(param_config),
+
+}
+
+configs_df = pd.DataFrame(configs, index=[0])
+
+excel_path = '../results/configs.xlsx'
+
+config_id = 1
+
+# if not os.path.exists(excel_path):
+#     configs_df.to_excel(excel_path, index=False)
+#     config_id = 1
+# else:
+#     # 读取现有的 Excel 文件
+#     existing_df = pd.read_excel(excel_path)
+#     # 将新数据追加到现有数据之后
+#     updated_df = pd.concat([existing_df, configs_df], ignore_index=True)
+#     # 将更新后的 DataFrame 保存回 Excel 文件
+#     updated_df.to_excel(excel_path, index=False)
+#     # 获取最新的 config_id
+#     config_id = len(updated_df)
+
+# 定义模型保存目录
+model_save_dir = 'lstm_models_'+str(config_id)
+
+results_path = f'../results/best_models_results_{config_id}.xlsx'
 
 if __name__ == "__main__":
     main()

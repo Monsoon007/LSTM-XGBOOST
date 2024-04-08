@@ -14,6 +14,9 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense,Dropout,LSTM
 import random
 
+from data.get_data import get_common_data
+
+
 # random.seed(1)
 
 
@@ -218,79 +221,10 @@ def LSTM_predict(context,start_date,end_date):
 
     return_upper = 0.002
     return_lower = -0.002
-    #取过去N天的数据作训练输入
-    traning_days = 40
-    T = context.T
-    #获得数据
-    trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',df=True).set_index('eob')
-    # trade_data = history(context.symbol, frequency='1d', start_time=start_date, end_time=end_date, fill_missing='last',df=True).set_index('eob')
-    # get_history_symbol(symbol=None, start_date=None, end_date=None, df=False)
 
-    trade_data.drop(columns=trade_data.columns[[0,1,-1,-2]], inplace=True) # 剔除行情数据中无用数据
-    #在这里修改数据，加入宏观数据
-    trade_data.index = pd.to_datetime(trade_data.index).date
-    # trade_data = trade_data.merge(context.sent_data, how='left', left_index=True, right_index=True)   
-    trade_data = trade_data.merge(context.macro_data, how='left', left_index=True, right_index=True)   
-    # trade_data = trade_data.merge(context.tech_data, how='left', left_index=True, right_index=True)   
-    #技术指标
-    # trade_data.index = pd.to_datetime(trade_data.index).date
-    # trade_data = trade_data.merge(context.tech_data, how='left', left_index=True, right_index=True)   
-
-    #收益率
-    return_T = pd.array(np.log(trade_data['close'].shift(-T)/trade_data['close'])/T)
-    trade_data.insert(loc=len(trade_data.columns), column='return'+str(T), value=return_T)
-    # test_data = trade_data.iloc[-T:]
-    #归一化
-    min_td = np.min(trade_data['return'+str(T)])
-    max_td = np.max(trade_data['return'+str(T)])
-    trade_data = trade_data.apply(lambda x:(x-min(x))/(max(x)-min(x)+np.exp(-10)))
-    #用60天的数据来预测下一天的数据
-    #举个例子 x[0]是0~59天的股价 y[0]是第60天的股价
-    X = []
-    Y = []
-    for i in range(trade_data.shape[0]-traning_days):
-        # 全部columns作为特征，除了最后一列收益率
-        X.append(np.array(trade_data.iloc[i:(i+traning_days),:-1].values, dtype=np.float64))  
-        # 选择return作为标签输出
-        Y.append(np.array(trade_data.iloc[(i+traning_days),-1],dtype=np.float64))
-    X = np.array(X)
-    Y = np.array(Y)
-
-    trade_data.dropna(inplace=True)
-
- # return_T = pd.array(trade_data['return_'+str(T)])
-    kmeans = KMeans(n_clusters=20, random_state=0,algorithm="elkan").fit(trade_data['return'+str(T)].values.reshape(-1,1))
-    returns = kmeans.cluster_centers_
-    max_return = np.max(returns)
-    min_return = np.min(returns)
-
-   
+    # model与超参数已经在run_strategy中加载
 
 
-
-    #搭建模型
-    #3层LSTM，对于每一个LSTM，加入dropout防止过拟合，最后1层全连接用来输出
-    #输入数据是60长度7维向量组，最后的输出为1个值
-    model = Sequential()
-    model.add(LSTM(units=50,return_sequences=True,input_shape=(X.shape[1],X.shape[2])))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50,return_sequences=True))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50))
-    model.add(Dropout(0.2))
-    model.add(Dense(units=1))
-
-    #adam优化 最小二乘损失
-    model.compile(optimizer='adam',loss='mean_squared_error')
-
-    #进行训练
-    epochs1=50
-    model.fit(X[:-T],Y[:-T],epochs=epochs1,batch_size=16)
-
-    #预测价格
-    predict_recent_return = model.predict(X[-T:])
-    #逆归一化
-    predict_recent_return = predict_recent_return*(max_td-min_td+np.exp(-10)) + min_td
 
     # 判断买入卖出信号
     # if (predict_recent_return[0]* predict_recent_return[1] <0 
@@ -333,6 +267,20 @@ def on_backtest_finished(context, indicator):
 
 
 if __name__ == '__main__':
+    # 导入上下文
+    from gm.model.storage import context
+
+    context.model_path, context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=None)
+
+    base_data = get_common_data('SHSE.510300', '2007-01-01', '2021-01-01', T)
+    # base_data的最后一列为未来T日的平均日收益率
+
+    # kmeans聚类，用于后续交易时的判断
+    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data[-1].values.reshape(-1, 1))
+    returns = kmeans.cluster_centers_
+    context.max_return = np.max(returns)
+    context.min_return = np.min(returns)
+
     '''
         strategy_id策略ID, 由系统生成
         filename文件名, 请与本文件名保持一致

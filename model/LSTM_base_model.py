@@ -1,12 +1,14 @@
 # import itertools
 import os
 import subprocess
+from gm.api import *
+
 
 import pandas as pd
 from tqdm.contrib import itertools
 
 from model.LSTM_data_handle import data_for_lstm
-from data.get_data import get_common_data
+from data.get_data import get_common_data, my_get_previous_n_trading_date
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -34,13 +36,20 @@ class LSTMModel(nn.Module):
 
 
 def prepare_data(symbol, start_date, end_date, T, window_size):
+    """
+    数据会返回一个元组，第一个元素是X，第二个元素是Y。
+    X的形状为(样本数量, 窗口大小, 特征数量)，Y的形状为(样本数量,)。
+    数据会自动前移window_size天，使给出的Y能覆盖要求的start_date到end_date的数据。
+    """
     # print(
     #     f"Preparing data for symbol: {symbol}, start_date: {start_date}, end_date: {end_date}, T: {T}, window_size: {window_size}")
-    data = get_common_data(symbol, start_date, end_date, T)
+    # 设置token
+    set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
+    data = get_common_data(symbol, my_get_previous_n_trading_date(start_date, counts=window_size), end_date, T)
+    # print(f"Data shape: {data.shape}")
     X, Y = data_for_lstm(data, window_size)
     # print(f"Prepared data X: {X}, Y: {Y}")
     return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
-
 
 def train(model, device, train_loader, criterion, optimizer, epoch, writer):
     model.train()
@@ -144,7 +153,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
         best_val_loss = float("inf")
-        best_model_path = "" # 验证集上最佳模型的保存路径
+        best_model_path = ""  # 验证集上最佳模型的保存路径
         for epoch in range(epochs):
             train(model, device, train_loader, criterion, optimizer, epoch, writer)
             val_loss = validate(model, device, val_loader, criterion, writer, epoch)
@@ -168,6 +177,7 @@ def main():
 
         # 加载最佳模型
         model.load_state_dict(torch.load(best_model_path))
+        model.eval()
         # 打印best_val_loss
         print(
             f'Best Validation Loss for T {T}, window_size {window_size}, hidden_dim {hidden_dim}, num_layers {num_layers}: {best_val_loss}')
@@ -212,20 +222,25 @@ def best_lstm_model(T=None):
         best_model = best_models_results.loc[
             best_models_results[best_models_results['T'] == T]['best_val_loss'].idxmin()]
 
-    # 返回最佳模型及其超参数
-    return best_model['best_model_path'], best_model['T'], best_model['window_size'], best_model['hidden_dim'], \
-        best_model['num_layers']
+    # 返回一个字典，包含最佳模型的地址及其超参数
+    return {
+        'T': best_model['T'],
+        'window_size': best_model['window_size'],
+        'hidden_dim': best_model['hidden_dim'],
+        'num_layers': best_model['num_layers'],
+        'model_path': best_model['best_model_path']
+    }
 
 
 symbol = 'SHSE.510300'
 
 date_config = {
-    'train_start_date': '2008-01-01',
-    'train_end_date': '2020-01-01',
-    'val_start_date': '2020-07-10',
-    'val_end_date': '2022-01-14',
-    'test_start_date': '2022-12-09',
-    'test_end_date': '2023-09-01'
+    'train_start_date': '2013-07-01',
+    'train_end_date': '2019-02-27',
+    'val_start_date': '2020-07-09',
+    'val_end_date': '2022-01-24',
+    'test_start_date': '2022-11-02',
+    'test_end_date': '2023-09-13'
 }
 
 train_start_date = date_config['train_start_date']
@@ -247,35 +262,32 @@ window_sizes = param_config['window_sizes']
 hidden_dims = param_config['hidden_dims']
 num_layers_list = param_config['num_layers_list']
 
+config_id = 5
+
 # 将config追加保存到configs.xlsx文件中
 configs = {
     'symbol': symbol,
     'date_config': str(date_config),
     'param_config': str(param_config),
-
+    'config_id': config_id,
 }
 
 configs_df = pd.DataFrame(configs, index=[0])
 
 excel_path = '../results/configs.xlsx'
 
-config_id = 1
-
-# if not os.path.exists(excel_path):
-#     configs_df.to_excel(excel_path, index=False)
-#     config_id = 1
-# else:
-#     # 读取现有的 Excel 文件
-#     existing_df = pd.read_excel(excel_path)
-#     # 将新数据追加到现有数据之后
-#     updated_df = pd.concat([existing_df, configs_df], ignore_index=True)
-#     # 将更新后的 DataFrame 保存回 Excel 文件
-#     updated_df.to_excel(excel_path, index=False)
-#     # 获取最新的 config_id
-#     config_id = len(updated_df)
+if not os.path.exists(excel_path):
+    configs_df.to_excel(excel_path, index=False)
+else:
+    # 读取现有的 Excel 文件
+    existing_df = pd.read_excel(excel_path)
+    # 将新数据追加到现有数据之后
+    updated_df = pd.concat([existing_df, configs_df], ignore_index=True)
+    # 将更新后的 DataFrame 保存回 Excel 文件
+    updated_df.to_excel(excel_path, index=False)
 
 # 定义模型保存目录
-model_save_dir = 'lstm_models_'+str(config_id)
+model_save_dir = 'lstm_models_' + str(config_id)
 
 results_path = f'../results/best_models_results_{config_id}.xlsx'
 

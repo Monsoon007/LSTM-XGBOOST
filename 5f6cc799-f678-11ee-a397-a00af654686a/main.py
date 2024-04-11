@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from data.get_data import get_common_data, my_get_previous_n_trading_date
-from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel
+from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
+    config_id
 import pandas as pd
 
 
@@ -34,7 +35,7 @@ def init(context):
     # 导入上下文
     from gm.model.storage import context
 
-    context.model_path, _, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=context.T)
+    context.model_path, context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=7)
     context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
@@ -70,7 +71,6 @@ def algo(context):
 
     # 若预测值为上涨则买入
     if prediction == 1:
-        # context.percent = max(min(200 * outcome / context.max_return, 1), 0)
         context.percent = 1
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -79,7 +79,6 @@ def algo(context):
 
     # 若预测下跌则清仓
     if prediction == -1 and position:
-        # context.percent = min(np.max(context.percent - outcome / context.min_return, 0), 1)
         context.percent = 0
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -146,6 +145,7 @@ def LSTM_predict(context, last_date):
         context.device)
     model.load_state_dict(torch.load(context.model_path))
     model.eval()  # 进入评估模式
+
     outputs = model(X_test.float().to(context.device))
     predicted_return = outputs.cpu().detach().numpy().flatten()
     predicted_return = predicted_return[-1]
@@ -164,22 +164,42 @@ def on_backtest_finished(context, indicator):
     来自gm.api的内置函数，不允许修改入参
     """
     result = {
+        'params': context.params,
         'pnl_ratio': indicator['pnl_ratio'],
         'sharp_ratio': indicator['sharp_ratio'],
         'max_drawdown': indicator['max_drawdown'],
-        'pnl_ratio_annual': indicator['pnl_ratio_annual'],
-        'win_ratio': indicator['win_ratio'],
+        'pnl_ratio_annual': indicator['pnl_ratio_annual']
     }
     print(result)
+    context.results.append(result)
 
 
-def run_strategy(T,threshold,test_start_date,test_end_date):
+def parameter_optimization(paras_list):
+    pool = multiprocessing.Pool(processes=4)  # 根据系统性能调整进程数
+    results = []
+    pbar = tqdm(total=len(paras_list), desc="Optimizing")
+
+    def update(*args):
+        pbar.update()
+
+    for params in paras_list:
+        result = pool.apply_async(run_strategy, args=(params,), callback=update)
+        results.append(result)
+    pool.close()
+    pool.join()
+    pbar.close()
+    return [result.get() for result in results]
+
+
+def run_strategy(params):
     # 导入上下文
     from gm.model.storage import context
 
+    context.params = params
+    context.T = params['T']
+    context.threshold = params['threshold']
 
-    context.T = T
-    context.threshold = threshold
+    context.results = []
 
     '''
         strategy_id策略ID, 由系统生成
@@ -194,19 +214,54 @@ def run_strategy(T,threshold,test_start_date,test_end_date):
         backtest_slippage_ratio回测滑点比例
         backtest_match_mode市价撮合模式，以下一tick/bar开盘价撮合:0，以当前tick/bar收盘价撮合：1
     '''
-    run(strategy_id='48aeb016-ef65-11ee-bcbf-a00af654686a',
+    run(strategy_id='5f6cc799-f678-11ee-a397-a00af654686a',
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time = test_start_date+' 08:00:00',
-        backtest_end_time = test_end_date+' 16:00:00',
+        backtest_start_time=test_start_date + ' 08:00:00',
+        backtest_end_time=test_end_date + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
         backtest_slippage_ratio=0.0001,
         backtest_match_mode=1)
+    return context.results
 
+
+def process_and_save_data(optimization_results, file_name):
+    """
+    处理一个包含字符串化字典的DataFrame，将其转换为包含原始数据的DataFrame，并保存到Excel文件中。
+    """
+    data = pd.DataFrame(optimization_results)
+
+    # 检查第一行，如果是字符串则转换回字典，如果已经是字典则直接使用
+    first_row_data = data.iloc[0, 0]
+    if isinstance(first_row_data, str):
+        dict_data = ast.literal_eval(first_row_data)
+    else:
+        dict_data = first_row_data  # 假定输入的就是字典格式
+
+    keys = list(dict_data.keys())
+    df = pd.DataFrame(columns=keys)
+
+    for i in range(len(data)):
+        row_data = data.iloc[i, 0]
+        if isinstance(row_data, str):
+            row_data = ast.literal_eval(row_data)
+        temp_df = pd.DataFrame([row_data])
+        df = pd.concat([df, temp_df], ignore_index=True)
+
+    df.to_excel(file_name, index=False)
 
 
 if __name__ == '__main__':
-    run_strategy(30,0.004,'2022-11-11','2023-09-05')
+    # 参数列表，可以是从配置文件读取的
+    paras_list = [
+        {'T': T, 'threshold': threshold}
+        for T in T_values
+        for threshold in np.arange(0.001, 0.006, 0.001)
+    ]
+    optimization_results = parameter_optimization(paras_list)
+
+    process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
+    # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

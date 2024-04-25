@@ -231,6 +231,7 @@ def get_common_data(symbol, start_date, end_date, T):
 
 if __name__ == '__main__':
     # 获取数据
-    data = get_common_data('SHSE.510300', '2010-03-01', '2020-03-31', 3)
+    data = get_common_data('SHSE.510300', '2019-03-01', '2020-03-31', 3)
 
     print(data.info())
+    print(data.columns)

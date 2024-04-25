@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from data.get_data import get_common_data, my_get_previous_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
-    config_id
+    config_id, val_start_date, val_end_date
 import pandas as pd
 
 
@@ -35,17 +35,22 @@ def init(context):
     # 导入上下文
     from gm.model.storage import context
 
-    context.model_path, context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=7)
+    model_dict = best_lstm_model(T=context.T)
+    context.model_path = model_dict['model_path']
+    context.window_size = model_dict['window_size']
+    context.hidden_dim = model_dict['hidden_dim']
+    context.num_layers = model_dict['num_layers']
+    # context.T = model_dict['T']
     context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
+    # base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
     # base_data的最后一列为未来T日的平均日收益率
 
-    # kmeans聚类，用于后续交易时的判断
-    kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data.iloc[:, -1].values.reshape(-1, 1))
-    returns = kmeans.cluster_centers_
-    context.max_return = np.max(returns)
-    context.min_return = np.min(returns)
+    # # kmeans聚类，用于后续交易时的判断
+    # kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data.iloc[:, -1].values.reshape(-1, 1))
+    # returns = kmeans.cluster_centers_
+    # context.max_return = np.max(returns)
+    # context.min_return = np.min(returns)
 
     # 止盈幅度
     context.earn_rate = 2
@@ -61,13 +66,13 @@ def init(context):
 def algo(context):
     now = context.now
     # 上一交易日
-    last_date = get_previous_trading_date(exchange='SHSE', date=now)
+    the_day_before = get_previous_trading_date(exchange='SHSE', date=now)
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    prediction, outcome = LSTM_predict(context, last_date)
+    prediction, outcome = LSTM_predict(context, the_day_before)
 
     # 若预测值为上涨则买入
     if prediction == 1:
@@ -89,12 +94,12 @@ def algo(context):
     todayClose = history(context.symbol, frequency='1d', start_time=now, end_time=now, fill_missing='last',
                          df=True).set_index('eob').close
 
-    # 当涨幅大于10%,平掉所有仓位止盈
+    # 当涨幅大于,平掉所有仓位止盈
     if position and len(position) > 0 and todayClose.item() / position['vwap'] >= 1 + context.earn_rate:
         order_close_all()
         # print("触发止盈")
 
-    # 当跌幅大于10%时,平掉所有仓位止损
+    # 当跌幅大于,平掉所有仓位止损
     if position and len(position) > 0 and todayClose.item() / position['vwap'] < 1 + context.sell_rate:
         order_close_all()
         # print("触发止损")
@@ -132,14 +137,19 @@ def on_order_status(context, order):  # 用于打印交易信息
         # print(f'{symbol} {side_effect} {volume}手, 价格{price}, 目标仓位{target_percent}, {order_type_word}委托, 成交')
 
 
-def LSTM_predict(context, last_date):
+def LSTM_predict(context, the_day_before):
+    """
+    last_date: 上一个交易日,
+    """
     return_upper = context.threshold
     return_lower = -context.threshold
 
     # modelPath和超参数已经在run_strategy中加载
 
-    X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(last_date, context.window_size + 100),
-                             last_date, context.T, context.window_size)
+    # X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(last_date, context.window_size + 100),
+    #                          my_get_previous_n_trading_date(last_date,1), context.T, context.window_size)
+    X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(the_day_before, context.window_size + 100),
+                             the_day_before, context.T, context.window_size) #已经是上一个交易日，避免了利用当天收盘价等“未来信息”
     # 加载模型
     model = LSTMModel(X_test.shape[2], int(context.hidden_dim), context.num_layers, 1, context.device).to(
         context.device)
@@ -165,10 +175,13 @@ def on_backtest_finished(context, indicator):
     """
     result = {
         'params': context.params,
+        'T': context.T,
+        'threshold': context.threshold,
         'pnl_ratio': indicator['pnl_ratio'],
         'sharp_ratio': indicator['sharp_ratio'],
         'max_drawdown': indicator['max_drawdown'],
         'pnl_ratio_annual': indicator['pnl_ratio_annual']
+
     }
     print(result)
     context.results.append(result)
@@ -218,8 +231,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=test_start_date + ' 08:00:00',
-        backtest_end_time=test_end_date + ' 16:00:00',
+        backtest_start_time=val_start_date + ' 08:00:00',
+        backtest_end_time=val_end_date + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -259,9 +272,12 @@ if __name__ == '__main__':
     paras_list = [
         {'T': T, 'threshold': threshold}
         for T in T_values
-        for threshold in np.arange(0.001, 0.006, 0.001)
+        # for T in [4]
+        for threshold in np.arange(0.001, 0.002, 0.001)
     ]
     optimization_results = parameter_optimization(paras_list)
 
-    process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
+    # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
+    process_and_save_data(optimization_results, f'../results/LSTM/lstm_val_backtest.xlsx')
+
     # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

@@ -17,9 +17,7 @@ from tqdm import tqdm
 from data.get_data import get_common_data, my_get_previous_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
     config_id, val_start_date, val_end_date
-from model.my_xgboost import lstm_to_xgboost, train_xgboost, xgb_T_values
 import pandas as pd
-import xgboost as xgb
 
 
 def init(context):
@@ -31,22 +29,28 @@ def init(context):
 
     # 股票标的
     # context.symbol = 'SHSE.600519'
-    # context.symbol = 'SHSE.510300'
+    context.symbol = 'SHSE.510300'
     # random.seed(1)
 
     # 导入上下文
     from gm.model.storage import context
 
+    model_dict = best_lstm_model(T=context.T)
+    context.model_path = model_dict['model_path']
+    context.window_size = model_dict['window_size']
+    context.hidden_dim = model_dict['hidden_dim']
+    context.num_layers = model_dict['num_layers']
+    # context.T = model_dict['T']
+    context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
+    # base_data的最后一列为未来T日的平均日收益率
 
-    xgb_path = f'../model/xgb_models/xgb_model_{context.target_T}.json'
-
-    # 如果xgb_path不存在
-    if not os.path.exists(xgb_path):
-        train_xgboost(context.target_T)
-
-    context.bst = xgb.Booster()
-    context.bst.load_model(xgb_path)
+    # # kmeans聚类，用于后续交易时的判断
+    # kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data.iloc[:, -1].values.reshape(-1, 1))
+    # returns = kmeans.cluster_centers_
+    # context.max_return = np.max(returns)
+    # context.min_return = np.min(returns)
 
     # 止盈幅度
     context.earn_rate = 2
@@ -62,13 +66,13 @@ def init(context):
 def algo(context):
     now = context.now
     # 上一交易日
-    last_date = get_previous_trading_date(exchange='SHSE', date=now)
+    the_day_before = get_previous_trading_date(exchange='SHSE', date=now)
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    prediction, outcome = combined_model_predict(context, last_date)
+    prediction, outcome = LSTM_predict(context, the_day_before)
 
     # 若预测值为上涨则买入
     if prediction == 1:
@@ -133,24 +137,28 @@ def on_order_status(context, order):  # 用于打印交易信息
         # print(f'{symbol} {side_effect} {volume}手, 价格{price}, 目标仓位{target_percent}, {order_type_word}委托, 成交')
 
 
-def combined_model_predict(context, last_date):
+def LSTM_predict(context, the_day_before):
+    """
+    last_date: 上一个交易日,
+    """
     return_upper = context.threshold
     return_lower = -context.threshold
 
-    X_test, _ = lstm_to_xgboost(last_date, last_date, context.target_T)
-    # 将数据转换为DMatrix对象，XGBoost专用的数据结构
-    dtest = xgb.DMatrix(X_test)
+    # modelPath和超参数已经在run_strategy中加载
 
-    # 预测，使用iteration_range指定使用的树的范围
-    # bst.best_iteration 是在训练时通过early stopping找到的最佳迭代次数
-    best_iteration = context.bst.best_iteration if hasattr(context.bst, 'best_iteration') else None
-    if best_iteration is not None:
-        Y_pred = context.bst.predict(dtest, iteration_range=(0, best_iteration + 1))
-    else:
-        # 如果没有使用早停或找不到最佳迭代次数，直接预测
-        Y_pred = context.bst.predict(dtest)
-    predicted_return = Y_pred[-1]
+    # X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(last_date, context.window_size + 100),
+    #                          my_get_previous_n_trading_date(last_date,1), context.T, context.window_size)
+    X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(the_day_before, context.window_size + 100),
+                             the_day_before, context.T, context.window_size) #已经是上一个交易日，避免了利用当天收盘价等“未来信息”
+    # 加载模型
+    model = LSTMModel(X_test.shape[2], int(context.hidden_dim), context.num_layers, 1, context.device).to(
+        context.device)
+    model.load_state_dict(torch.load(context.model_path))
+    model.eval()  # 进入评估模式
 
+    outputs = model(X_test.float().to(context.device))
+    predicted_return = outputs.cpu().detach().numpy().flatten()
+    predicted_return = predicted_return[-1]
     # 打印日期和预测值
     # print("预测日期：", last_date, f"预测未来{context.T}日的平均日收益率：", predicted_return)
     if predicted_return > return_upper:
@@ -167,24 +175,33 @@ def on_backtest_finished(context, indicator):
     """
     result = {
         'params': context.params,
+        'T': context.T,
+        'threshold': context.threshold,
         'pnl_ratio': indicator['pnl_ratio'],
         'sharp_ratio': indicator['sharp_ratio'],
         'max_drawdown': indicator['max_drawdown'],
-        'pnl_ratio_annual': indicator['pnl_ratio_annual'],
-        'T': context.target_T,
-        'symbol': context.symbol,
+        'pnl_ratio_annual': indicator['pnl_ratio_annual']
+
     }
-    # 将result转换为dataframe
-    # df = pd.DataFrame([result])
-    # # 保存结果
-    # path = f'../results/combined_model/xgb_test_strategy_{config_id}_test.xlsx'
-    # # 追加保存
-    # if os.path.exists(path):
-    #     df.to_excel(path, index=False, header=False, mode='a')
-    # else:
-    #     df.to_excel(path, index=False)
     print(result)
     context.results.append(result)
+
+
+def parameter_optimization(paras_list):
+    pool = multiprocessing.Pool(processes=4)  # 根据系统性能调整进程数
+    results = []
+    pbar = tqdm(total=len(paras_list), desc="Optimizing")
+
+    def update(*args):
+        pbar.update()
+
+    for params in paras_list:
+        result = pool.apply_async(run_strategy, args=(params,), callback=update)
+        results.append(result)
+    pool.close()
+    pool.join()
+    pbar.close()
+    return [result.get() for result in results]
 
 
 def run_strategy(params):
@@ -192,8 +209,7 @@ def run_strategy(params):
     from gm.model.storage import context
 
     context.params = params
-    context.symbol = params['symbol']
-    context.target_T = int(params['target_T'])
+    context.T = params['T']
     context.threshold = params['threshold']
 
     context.results = []
@@ -211,14 +227,12 @@ def run_strategy(params):
         backtest_slippage_ratio回测滑点比例
         backtest_match_mode市价撮合模式，以下一tick/bar开盘价撮合:0，以当前tick/bar收盘价撮合：1
     '''
-    run(strategy_id='30047b77-f74e-11ee-8f7f-a00af654686a',
+    run(strategy_id='5f6cc799-f678-11ee-a397-a00af654686a',
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
         backtest_start_time=test_start_date + ' 08:00:00',
         backtest_end_time=test_end_date + ' 16:00:00',
-        # backtest_start_time='2023-09-14 08:00:00',
-        # backtest_end_time='2024-02-01 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -253,68 +267,17 @@ def process_and_save_data(optimization_results, file_name):
     df.to_excel(file_name, index=False)
 
 
-def parameter_optimization(paras_list, processes=2):
-    pool = multiprocessing.Pool(processes)  # 根据系统性能调整进程数
-    results = []
-    pbar = tqdm(total=len(paras_list), desc="Optimizing")
-
-    def update(*args):
-        pbar.update()
-
-    for params in paras_list:
-        result = pool.apply_async(run_strategy, args=(params,), callback=update)
-        results.append(result)
-    pool.close()
-    pool.join()
-    pbar.close()
-    return [result.get() for result in results]
-
-
 if __name__ == '__main__':
-    # 贵州茅台
-    # 证券代码: 600519
-    # 上市地: 上海证券交易所
-    # 宁德时代
-    # 证券代码: 300750
-    # 上市地: 深圳证券交易所
-    # 中国平安
-    # 证券代码: 601318
-    # 上市地: 上海证券交易所
-    # 招商银行
-    # 证券代码: 600036
-    # 上市地: 上海证券交易所
-    # 五粮液
-    # 证券代码: 000858
-    # 上市地: 深圳证券交易所
-    # 隆基绿能
-    # 证券代码: 601012
-    # 上市地: 上海证券交易所
-    # 美的集团
-    # 证券代码: 000333
-    # 上市地: 深圳证券交易所
-    # 长江电力
-    # 证券代码: 600900
-    # 上市地: 上海证券交易所
-    # 兴业银行
-    # 证券代码: 601166
-    # 上市地: 上海证券交易所
-    # 比亚迪
-    # 证券代码: 002594
-    # 上市地: 深圳证券交易所
-
-    symbols = ['SHSE.600519', 'SZSE.300750', 'SHSE.601318', 'SHSE.600036', 'SZSE.000858', 'SHSE.601012', 'SZSE.000333','SHSE.600900', 'SHSE.601166', 'SZSE.002594']
     # 参数列表，可以是从配置文件读取的
     paras_list = [
-        {'symbol':symbol,'target_T': target_T, 'threshold': threshold}
-        # for target_T in xgb_T_values
-
-        for symbol in symbols
-        for target_T in [4]
+        {'T': T, 'threshold': threshold}
+        # for T in T_values
+        for T in [4]
         for threshold in np.arange(0.001, 0.002, 0.001)
     ]
-    optimization_results = parameter_optimization(paras_list, processes=3)
+    optimization_results = parameter_optimization(paras_list)
 
-    # process_and_save_data(optimization_results, f'../results/combined_model/xgb_test_strategy_{config_id}.xlsx')
-    process_and_save_data(optimization_results, f'../../results/XGBoost_FLIXNet/xgb_test_backtest_robust2.xlsx')
+    # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
+    process_and_save_data(optimization_results, f'../results/LSTM/lstm_test_backtest.xlsx')
 
     # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

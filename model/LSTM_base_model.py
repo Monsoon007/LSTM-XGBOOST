@@ -1,12 +1,16 @@
 # import itertools
+import inspect
+import json
 import os
 import subprocess
+from gm.api import *
 
 import pandas as pd
+from tqdm import tqdm
 from tqdm.contrib import itertools
 
 from model.LSTM_data_handle import data_for_lstm
-from data.get_data import get_common_data
+from data.get_data import get_common_data, my_get_previous_n_trading_date
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -34,9 +38,17 @@ class LSTMModel(nn.Module):
 
 
 def prepare_data(symbol, start_date, end_date, T, window_size):
+    """
+    数据会返回一个元组，第一个元素是X，第二个元素是Y。
+    X的形状为(样本数量, 窗口大小, 特征数量)，Y的形状为(样本数量,)。
+    数据会自动前移window_size天，使给出的Y能覆盖要求的start_date到end_date的数据。
+    """
     # print(
     #     f"Preparing data for symbol: {symbol}, start_date: {start_date}, end_date: {end_date}, T: {T}, window_size: {window_size}")
-    data = get_common_data(symbol, start_date, end_date, T)
+    # 设置token
+    set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
+    data = get_common_data(symbol, my_get_previous_n_trading_date(start_date, counts=window_size), end_date, T)
+    # print(f"Data shape: {data.shape}")
     X, Y = data_for_lstm(data, window_size)
     # print(f"Prepared data X: {X}, Y: {Y}")
     return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
@@ -103,17 +115,42 @@ def main():
 
     for T, window_size, hidden_dim, num_layers in itertools.product(T_values, window_sizes, hidden_dims,
                                                                     num_layers_list):
-        # 检查该种参数模型是否已经训练过，如果训练过，则跳过
+        # 检查该种参数模型是否已经训练过
         model_path = os.path.join(model_save_dir,
                                   f'best_lstm_model_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}.pth')
+
         if os.path.exists(model_path):
+            X_val, Y_val = prepare_data(symbol, val_start_date, val_end_date, T, window_size)
+
+            val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size, shuffle=False)
+
+            # 加载模型
+            model = LSTMModel(input_dim=X_val.shape[2], hidden_dim=hidden_dim, num_layers=num_layers,
+                              output_dim=output_dim, device=device)
+            model.load_state_dict(torch.load(model_path))
+            model.to(device)
+            model.eval()
+
+            # 设置损失函数
+            criterion = nn.MSELoss()
+
+            # 计算在验证集上的MSE loss
+            val_loss = 0.0
+            with torch.no_grad():
+                for inputs, targets in val_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+                    val_loss += loss.item()
+            val_loss /= len(val_loader)
+
             # 将该模型的结果记录到best_models_results中
             best_models_results.append({
                 'T': T,
                 'window_size': window_size,
                 'hidden_dim': hidden_dim,
                 'num_layers': num_layers,
-                'best_val_loss': 0.0,
+                'best_val_loss': val_loss,
                 'best_model_path': model_path
             })
             continue
@@ -144,7 +181,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
         best_val_loss = float("inf")
-        best_model_path = "" # 验证集上最佳模型的保存路径
+        best_model_path = ""  # 验证集上最佳模型的保存路径
         for epoch in range(epochs):
             train(model, device, train_loader, criterion, optimizer, epoch, writer)
             val_loss = validate(model, device, val_loader, criterion, writer, epoch)
@@ -168,6 +205,7 @@ def main():
 
         # 加载最佳模型
         model.load_state_dict(torch.load(best_model_path))
+        model.eval()
         # 打印best_val_loss
         print(
             f'Best Validation Loss for T {T}, window_size {window_size}, hidden_dim {hidden_dim}, num_layers {num_layers}: {best_val_loss}')
@@ -212,20 +250,151 @@ def best_lstm_model(T=None):
         best_model = best_models_results.loc[
             best_models_results[best_models_results['T'] == T]['best_val_loss'].idxmin()]
 
-    # 返回最佳模型及其超参数
-    return best_model['best_model_path'], best_model['T'], best_model['window_size'], best_model['hidden_dim'], \
-        best_model['num_layers']
+    # 返回一个字典，包含最佳模型的地址及其超参数
+    return {
+        'T': best_model['T'],
+        'window_size': best_model['window_size'],
+        'hidden_dim': best_model['hidden_dim'],
+        'num_layers': best_model['num_layers'],
+        'model_path': best_model['best_model_path'],
+        'val_r2': lstm_evaluate(best_model, set="val", only_r2=True),
+    }
+
+
+def best_lstms(topK=10, T_values=None):
+    """
+    获取所有T条件下的最佳LSTM模型的地址及其超参数、val_r2
+    可以设置topK参数，返回val_r2最高的前topK个模型，默认为10
+    可以设置T_values参数，对返回的模型进行筛选，只返回T_values中的模型
+    """
+    best_lstms = []
+    for T in tqdm(T_values, desc=f'Running {inspect.currentframe().f_code.co_name}'):
+        best_model = best_lstm_model(T)
+        best_lstms.append(best_model)
+    # 按照val_r2的第二个位置的r2进行降序
+    best_lstms.sort(key=lambda x: x['val_r2'][1], reverse=True)
+    # 取前topK个
+    best_lstms = best_lstms[:topK]
+    if T_values is None:
+        return best_lstms
+    else:
+        return [best_lstm for best_lstm in best_lstms if best_lstm['T'] in T_values]
+
+
+def lstm_predict(model_dict, start_date, end_date):
+    """
+    model_dict: 包含模型超参数的字典
+    返回结果为包含模型预测值和真实值的DataFrame
+    """
+    X_test, Y_true = prepare_data(symbol, start_date, end_date, model_dict['T'], model_dict['window_size'])
+    # 检查如果GPU没有使用成功，raise error
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        raise ValueError('GPU not available')
+    try:
+        model_path = model_dict['model_path']
+    except KeyError:
+        model_path = model_dict['best_model_path']
+    model = LSTMModel(X_test.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], 1, device).to(device)
+    model.load_state_dict(torch.load(os.path.join('../model/', model_path)))
+    model.eval()
+    with torch.no_grad():
+        outputs = model(X_test.float().to(device))
+        Y_pred = outputs.cpu().detach().numpy().flatten()
+    # 将Y_test处理后，与Y_pred合并为一个DataFrame
+
+    Y_true = Y_true.flatten()
+    Y_true = pd.DataFrame(Y_true, columns=['Y_true'])
+    Y_pred = pd.DataFrame(Y_pred, columns=['Y_pred'])
+    result = pd.concat([Y_true, Y_pred], axis=1)
+    result.index = pd.date_range(start=start_date, periods=len(result), freq='B')
+    return result
+
+
+def lstm_evaluate(model_dict, set="val", only_r2=False):
+    """
+    mode为
+    """
+    if set == "val":
+        start_date = val_start_date
+        end_date = val_end_date
+        pathStr = 'Val'
+    elif set == "test":
+        start_date = test_start_date
+        end_date = test_end_date
+        pathStr = 'Test'
+    df = lstm_predict(model_dict, start_date, end_date)
+
+    # 计算R2
+    from sklearn.metrics import r2_score
+    from matplotlib import pyplot as plt
+
+    r2 = r2_score(df['Y_true'], df['Y_pred'])
+    # print(f"R2: {r2:.4f}")
+
+    if only_r2:
+        return model_dict["T"], r2
+
+    # 绘制折线图
+    plt.figure(figsize=(15, 6))
+    plt.plot(df['Y_true'], label='True Value', color='#1f77b4', linewidth=2)
+    plt.plot(df['Y_pred'], label='Predicted Value', color='#ff7f0e', linewidth=2)
+    plt.xlabel('Date')
+    plt.ylabel('Close Price')
+    plt.title(f'LSTM_{model_dict["T"]} Prediction VS True in {pathStr} set')
+    # 在图的左下角添加R²值
+    plt.text(0.1, 0.05, f'$R²: {r2:.4f}$', transform=plt.gca().transAxes, fontsize=16, color='green')
+    plt.legend()
+    # 保存图片
+    savePath = f'../results/LSTM_{pathStr}_evaluate/{pathStr}_lstm_{model_dict["T"]}_prediction_vs_true.png'
+    plt.savefig(savePath)
+    print(f'图片已经保存在{savePath}')
+    return model_dict["T"], r2
+
+
+def get_lstm_r2_dict(set='val', updated=False):
+    # 定义文件路径
+    file_path = f'../results/LSTM/LSTM_{set}_r2_dict.csv'
+
+    # 如果不需要更新且文件已存在，则直接从CSV文件加载数据
+    if not updated and os.path.exists(file_path):
+        df = pd.read_csv(file_path, index_col=0)  # 假设第一列是索引
+        r2_dict = df['R2'].to_dict()
+        print(f'Loaded LSTM {set} r2 dict from {file_path}')
+        return r2_dict
+    print(f'Calculating LSTM {set} r2 dict...')
+    # 如果需要更新或文件不存在，则重新计算
+    r2_dict = {}
+    for T in tqdm(T_values, desc=f'lstm_evaluate in {set} set'):
+        _, r2 = lstm_evaluate(best_lstm_model(T), set, only_r2=True)
+        r2_dict[int(T)] = r2  # 确保键是Python的int类型
+
+    # 将字典转换为DataFrame，并保存到CSV文件
+    df = pd.DataFrame(list(r2_dict.items()), columns=['T', 'R2'])
+    df.to_csv(file_path, index=False)
+
+    return r2_dict
+
+
+def get_lstm_r2_series(set='val', updated=False):
+    r2_dict = get_lstm_r2_dict(set, updated)
+    r2_series = pd.Series(r2_dict)
+    # 索引名字为T，列名为R2
+    r2_series.index.name = 'T'
+    r2_series.name = 'R2'
+    return r2_series
 
 
 symbol = 'SHSE.510300'
 
 date_config = {
-    'train_start_date': '2008-01-01',
-    'train_end_date': '2020-01-01',
-    'val_start_date': '2020-07-10',
-    'val_end_date': '2022-01-14',
-    'test_start_date': '2022-12-09',
-    'test_end_date': '2023-09-01'
+    'train_start_date': '2013-07-01',
+    'train_end_date': '2020-07-01',
+    'val_start_date': '2020-07-09',
+    'val_end_date': '2022-01-24',
+    'test_start_date': '2022-11-02',
+    'test_end_date': '2023-09-13'
 }
 
 train_start_date = date_config['train_start_date']
@@ -236,7 +405,7 @@ test_start_date = date_config['test_start_date']
 test_end_date = date_config['test_end_date']
 
 param_config = {
-    'T_values': [1, 3, 7, 15, 30],
+    'T_values': list(np.arange(1, 31)),
     'window_sizes': [20, 40, 60, 120],
     'hidden_dims': [30, 50, 70],
     'num_layers_list': [3, 5, 9]
@@ -247,23 +416,22 @@ window_sizes = param_config['window_sizes']
 hidden_dims = param_config['hidden_dims']
 num_layers_list = param_config['num_layers_list']
 
+config_id = 6
+
 # 将config追加保存到configs.xlsx文件中
 configs = {
     'symbol': symbol,
     'date_config': str(date_config),
     'param_config': str(param_config),
-
+    'config_id': config_id,
 }
 
 configs_df = pd.DataFrame(configs, index=[0])
 
 excel_path = '../results/configs.xlsx'
 
-config_id = 1
-
 # if not os.path.exists(excel_path):
 #     configs_df.to_excel(excel_path, index=False)
-#     config_id = 1
 # else:
 #     # 读取现有的 Excel 文件
 #     existing_df = pd.read_excel(excel_path)
@@ -271,13 +439,11 @@ config_id = 1
 #     updated_df = pd.concat([existing_df, configs_df], ignore_index=True)
 #     # 将更新后的 DataFrame 保存回 Excel 文件
 #     updated_df.to_excel(excel_path, index=False)
-#     # 获取最新的 config_id
-#     config_id = len(updated_df)
 
 # 定义模型保存目录
-model_save_dir = 'lstm_models_'+str(config_id)
+model_save_dir = 'lstm_models_' + str(config_id)
 
-results_path = f'../results/best_models_results_{config_id}.xlsx'
+results_path = f'../results/best_models_results/best_models_results_{config_id}.xlsx'
 
 if __name__ == "__main__":
     main()

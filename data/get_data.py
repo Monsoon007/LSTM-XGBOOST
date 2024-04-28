@@ -160,14 +160,15 @@ def my_get_previous_n_trading_date(date, counts=1, exchanges='SHSE'):
     :param date：目标日期
     :param counts：历史回溯天数，默认为1，即前一天
     """
-    if isinstance(date, str) and len(date) > 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
-    if isinstance(date, str) and len(date) == 10:
-        date = datetime.datetime.strptime(date, '%Y-%m-%d')
-    previous_N_trading_date = get_trading_dates(exchange=exchanges, start_date=date - datetime.timedelta(
-        days=max(int(counts) + 30, int(counts) * 2)),
-                                                end_date=date)[-counts]
-    return previous_N_trading_date
+    return get_previous_n_trading_dates(exchanges, date, counts)[0]
+
+def my_get_next_n_trading_date(date, counts=1, exchange='SHSE'):
+    """
+    获取date后移N个交易日的日期,end_date为datetime格式，包括date日期
+    :param date：目标日期
+    :param counts：未来预测天数，默认为1，即后一天
+    """
+    return get_next_n_trading_dates(exchange,date,counts)[-1]
 
 
 def get_common_data(symbol, start_date, end_date, T):
@@ -182,13 +183,20 @@ def get_common_data(symbol, start_date, end_date, T):
     max_lead = 120
     # 由于MA_120,EMA_120,avg_daily_return_120,AR,BR需要120天的数据，所以需要提前120天
     leadStart = my_get_previous_n_trading_date(start_date, counts=max_lead)
+
+    # 由于需要计算未来T日的平均日收益率，所以end_date需要推迟T天
+    forwardEnd = my_get_next_n_trading_date(end_date, counts=T)
+
     # 检查leadStart和end_date是否在数据范围内
     if to_datetime(leadStart) < macro_start_date:
         raise ValueError('leadStart is out of macro range')
     if to_datetime(end_date) > macro_end_date:
         raise ValueError('end_date is out of macro range')
-    trade_data = history(symbol, frequency='1d', start_time=leadStart, end_time=end_date, fill_missing='last',
+    # if to_datetime(leadStart)<to_datetime('2012-05-01'):
+    #     raise ValueError('leadStart 不能早于 2012-05-01，因为trade_data最早2012-05，加上MA提前量')
+    trade_data = history(symbol, frequency='1d', start_time=leadStart, end_time=forwardEnd, fill_missing='last',
                          df=True)
+    # print((trade_data.info()))
     # 去除 'symbol', 'eob', 'frequency','position' 列
     trade_data.drop(['symbol', 'eob', 'frequency', 'position'], axis=1, inplace=True)
     # 将'bob'去时区化后作为索引
@@ -205,8 +213,10 @@ def get_common_data(symbol, start_date, end_date, T):
     add_vwap_factor(data)
     data['AR'] = calculate_ar(data)
     data['BR'] = calculate_br(data)
+    # print(data.info())
     # data数据范围修正为start_date和end_date之间
     data = data[start_date:end_date]
+    # print(data.info())
     # 将macro_data根据日期与data合并
     data = data.join(macro_data, how='left')
     # 去除有空值的行
@@ -221,6 +231,7 @@ def get_common_data(symbol, start_date, end_date, T):
 
 if __name__ == '__main__':
     # 获取数据
-    data = get_common_data('SHSE.510300', '2019-01-01', '2020-01-01', 3)
+    data = get_common_data('SHSE.510300', '2019-03-01', '2020-03-31', 3)
 
     print(data.info())
+    print(data.columns)

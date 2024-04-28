@@ -15,7 +15,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from data.get_data import get_common_data, my_get_previous_n_trading_date
-from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values,test_start_date, test_end_date,config_id
+from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
+    config_id
 import pandas as pd
 
 
@@ -37,7 +38,7 @@ def init(context):
     context.model_path, context.T, context.window_size, context.hidden_dim, context.num_layers = best_lstm_model(T=7)
     context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    base_data = get_common_data('SHSE.510300', '2008-01-01', '2021-01-01', context.T)
+    base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
     # base_data的最后一列为未来T日的平均日收益率
 
     # kmeans聚类，用于后续交易时的判断
@@ -143,6 +144,8 @@ def LSTM_predict(context, last_date):
     model = LSTMModel(X_test.shape[2], int(context.hidden_dim), context.num_layers, 1, context.device).to(
         context.device)
     model.load_state_dict(torch.load(context.model_path))
+    model.eval()  # 进入评估模式
+
     outputs = model(X_test.float().to(context.device))
     predicted_return = outputs.cpu().detach().numpy().flatten()
     predicted_return = predicted_return[-1]
@@ -215,8 +218,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time = test_start_date+' 08:00:00',
-        backtest_end_time = test_end_date+' 16:00:00',
+        backtest_start_time=test_start_date + ' 08:00:00',
+        backtest_end_time=test_end_date + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -250,6 +253,7 @@ def process_and_save_data(optimization_results, file_name):
 
     df.to_excel(file_name, index=False)
 
+
 if __name__ == '__main__':
     # 参数列表，可以是从配置文件读取的
     paras_list = [
@@ -260,3 +264,4 @@ if __name__ == '__main__':
     optimization_results = parameter_optimization(paras_list)
 
     process_and_save_data(optimization_results, f'../results/optimization_results_{config_id}.xlsx')
+    # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

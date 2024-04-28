@@ -231,8 +231,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=val_start_date + ' 08:00:00',
-        backtest_end_time=val_end_date + ' 16:00:00',
+        backtest_start_time=test_start_date + ' 08:00:00',
+        backtest_end_time=test_end_date + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -271,13 +271,13 @@ if __name__ == '__main__':
     # 参数列表，可以是从配置文件读取的
     paras_list = [
         {'T': T, 'threshold': threshold}
-        for T in T_values
-        # for T in [4]
+        # for T in T_values
+        for T in [4]
         for threshold in np.arange(0.001, 0.002, 0.001)
     ]
     optimization_results = parameter_optimization(paras_list)
 
     # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
-    process_and_save_data(optimization_results, f'../results/LSTM/lstm_val_backtest.xlsx')
+    process_and_save_data(optimization_results, f'../results/LSTM/lstm_test_backtest.xlsx')
 
     # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

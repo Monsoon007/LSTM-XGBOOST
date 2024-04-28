@@ -14,7 +14,7 @@ def adjust_lightness(color, amount=0.5):
     new_c = colorsys.hls_to_rgb(h, max(0, min(1, l * amount)), s)  # 调整亮度并转回RGB
     return mcolors.to_hex(new_c)  # 将RGB颜色转换为十六进制颜色
 
-def single_scatter_with_envelope(series, base_color, marker, model_name='LSTM', set='Val', save_path=None):
+def single_scatter_with_envelope(series, base_color, marker, model_name='LSTM', set='Val', save_path=None,show=True):
     """
     series: pd.Series，索引为X，值为Y，索引和值都需要有名称(x_label,y_label)
     """
@@ -37,7 +37,7 @@ def single_scatter_with_envelope(series, base_color, marker, model_name='LSTM', 
 
     # Plot scatter plot and envelope line
     plt.scatter(x, y, color=lighter_color, marker=marker, label=f'Data Points of {model_name} in {set} Set')
-    plt.plot(xs, ys, color=darker_color, label=f'Envelope Line of {model_name} in {set} Set')
+    plt.plot(xs, ys, color=darker_color, label=f'Fitting Line of {model_name} in {set} Set')
 
     plt.xlabel(series.index.name if series.index.name else 'Index')
     plt.ylabel(series.name if series.name else 'Value')
@@ -47,22 +47,40 @@ def single_scatter_with_envelope(series, base_color, marker, model_name='LSTM', 
     plt.grid(True, linestyle='--')
     if save_path:
         plt.savefig(save_path, dpi=300)
-    plt.show()
+    if show:
+        plt.show()
 
-def comparison_scatter_with_envelope(data1, data2, title='Scatter Plot with Envelope Lines', xlabel='T', ylabel='R2'):
+def comparison_scatter_with_envelope(series1, series2, title='Scatter Plot with Fitting Lines', xlabel=None, ylabel=None, model_name1='Model 1', model_name2='Model 2', save=False, save_path='comparison_plot.png'):
     """
-    """
+    在同一图表中绘制两个数据集的散点图和包络线，用以比较。
 
-    # Plot settings
-    plt.figure(figsize=(10, 5))
-    single_scatter_with_envelope(data1, 'blue', 'o', 'LSTM')
-    single_scatter_with_envelope(data2, 'green', 'x', 'XGB/FLIXNet')
+    参数:
+    - series1, series2: pd.Series，两个数据集，索引为X，值为Y，需要有名称。
+    - title: str, 图表的标题。
+    - xlabel: str, X轴的标签，默认为series1索引的名称。
+    - ylabel: str, Y轴的标签，默认为series1值的名称。
+    - legend1, legend2: str, 两个数据集的图例标签。
+    - save: bool, 是否将图表保存为图片。
+    - save_path: str, 图片保存路径。
+    """
+    # 如果没有提供xlabel和ylabel，使用series1的索引名和值名
+    if xlabel is None:
+        xlabel = series1.index.name if series1.index.name else 'Index'
+    if ylabel is None:
+        ylabel = series1.name if series1.name else 'Value'
+
+    plt.figure(figsize=(10, 6))
+    # 绘制第一个数据集
+    single_scatter_with_envelope(series1, 'blue', 'o', model_name=model_name1, show=False)
+    # 绘制第二个数据集
+    single_scatter_with_envelope(series2, 'green', 'x', model_name=model_name2, show=False)
+
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.grid(True)
+    plt.grid(True, linestyle='--')
     plt.legend()
-    # 保存
-    # plt.savefig('comparison_scatter_with_envelope.png')
-    plt.show()
 
+    if save:
+        plt.savefig(save_path, dpi=300)
+    plt.show()

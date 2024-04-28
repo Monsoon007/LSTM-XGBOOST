@@ -261,10 +261,11 @@ def best_lstm_model(T=None):
     }
 
 
-def best_lstms(topK=10):
+def best_lstms(topK=10, T_values=None):
     """
     获取所有T条件下的最佳LSTM模型的地址及其超参数、val_r2
     可以设置topK参数，返回val_r2最高的前topK个模型，默认为10
+    可以设置T_values参数，对返回的模型进行筛选，只返回T_values中的模型
     """
     best_lstms = []
     for T in tqdm(T_values, desc=f'Running {inspect.currentframe().f_code.co_name}'):
@@ -274,7 +275,10 @@ def best_lstms(topK=10):
     best_lstms.sort(key=lambda x: x['val_r2'][1], reverse=True)
     # 取前topK个
     best_lstms = best_lstms[:topK]
-    return best_lstms
+    if T_values is None:
+        return best_lstms
+    else:
+        return [best_lstm for best_lstm in best_lstms if best_lstm['T'] in T_values]
 
 
 def lstm_predict(model_dict, start_date, end_date):
@@ -343,13 +347,15 @@ def lstm_evaluate(model_dict, set="val", only_r2=False):
     plt.text(0.1, 0.05, f'$R²: {r2:.4f}$', transform=plt.gca().transAxes, fontsize=16, color='green')
     plt.legend()
     # 保存图片
-    plt.savefig(f'../results/LSTM_{pathStr}_evaluate/{pathStr}_lstm_{model_dict["T"]}_prediction_vs_true.png')
+    savePath = f'../results/LSTM_{pathStr}_evaluate/{pathStr}_lstm_{model_dict["T"]}_prediction_vs_true.png'
+    plt.savefig(savePath)
+    print(f'图片已经保存在{savePath}')
     return model_dict["T"], r2
 
 
 def get_lstm_r2_dict(set='val', updated=False):
     # 定义文件路径
-    file_path = f'../results/LSTM_{set}_r2_dict.csv'
+    file_path = f'../results/LSTM/LSTM_{set}_r2_dict.csv'
 
     # 如果不需要更新且文件已存在，则直接从CSV文件加载数据
     if not updated and os.path.exists(file_path):
@@ -365,10 +371,19 @@ def get_lstm_r2_dict(set='val', updated=False):
         r2_dict[int(T)] = r2  # 确保键是Python的int类型
 
     # 将字典转换为DataFrame，并保存到CSV文件
-    df = pd.DataFrame(list(r2_dict.items()), columns=['Temperature', 'R2'])
+    df = pd.DataFrame(list(r2_dict.items()), columns=['T', 'R2'])
     df.to_csv(file_path, index=False)
 
     return r2_dict
+
+
+def get_lstm_r2_series(set='val', updated=False):
+    r2_dict = get_lstm_r2_dict(set, updated)
+    r2_series = pd.Series(r2_dict)
+    # 索引名字为T，列名为R2
+    r2_series.index.name = 'T'
+    r2_series.name = 'R2'
+    return r2_series
 
 
 symbol = 'SHSE.510300'

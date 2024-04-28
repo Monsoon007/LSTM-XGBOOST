@@ -155,7 +155,7 @@ def xgb_evaluate(target_T, set="val", only_r2=False):
 
 def get_xgb_r2_dict(set='val', updated=False):
     # 定义文件路径
-    file_path = f'../results/XGBoost_{set}_r2_dict.csv'
+    file_path = f'../results/XGBoost_FLIXNet/XGBoost_{set}_r2_dict.csv'
 
     # 如果不需要更新且文件已存在，则直接从CSV文件加载数据
     if not updated and os.path.exists(file_path):
@@ -171,14 +171,21 @@ def get_xgb_r2_dict(set='val', updated=False):
         r2_dict[int(T)] = r2  # 确保键是Python的int类型
 
     # 将字典转换为DataFrame，并保存到CSV文件
-    df = pd.DataFrame(list(r2_dict.items()), columns=['Temperature', 'R2'])
+    df = pd.DataFrame(list(r2_dict.items()), columns=['T', 'R2'])
     df.to_csv(file_path, index=False)
 
     return r2_dict
 
+def get_xgb_r2_series(set='val', updated=False):
+    r2_dict = get_xgb_r2_dict(set, updated)
+    r2_series = pd.Series(r2_dict)
+    # 索引名字为T，列名为R2
+    r2_series.index.name = 'T'
+    r2_series.name = 'R2'
+    return r2_series
 
-best_lstms = best_lstms(topK=30)
-xgb_T_values = list(np.arange(1, 11))
+best_lstms = best_lstms(topK=30, T_values=list(np.arange(1, 31, 3)))
+xgb_T_values = list(np.arange(1, 31))
 
 if __name__ == '__main__':
     for target_T in tqdm(xgb_T_values, desc='Training XGBoost for different target_T values'):

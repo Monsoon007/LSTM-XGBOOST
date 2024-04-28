@@ -443,7 +443,7 @@ excel_path = '../results/configs.xlsx'
 # 定义模型保存目录
 model_save_dir = 'lstm_models_' + str(config_id)
 
-results_path = f'../results/best_models_results/best_models_results_{config_id}.xlsx'
+results_path = f'../results/bestLSTMmodels_results/best_models_results_{config_id}.xlsx'
 
 if __name__ == "__main__":
     main()

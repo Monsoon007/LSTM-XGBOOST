@@ -17,10 +17,11 @@ from tqdm import tqdm
 from data.get_data import get_common_data, my_get_previous_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
     config_id, val_start_date, val_end_date
-from model.my_xgboost import lstm_to_xgboost, train_xgboost, xgb_T_values
+from model.my_xgboost import lstm_to_xgboost, xgb_T_values, xgb_predict, modelDirectory, train_xgboost_classify
 import pandas as pd
 import xgboost as xgb
 
+# from LSTM_Strategy.main import algo
 
 def init(context):
     # 每天14:50 定时执行algo任务,
@@ -39,11 +40,11 @@ def init(context):
 
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    xgb_path = f'../model/xgb_models/xgb_model_{context.target_T}.json'
+    xgb_path = f'{modelDirectory}/xgb_model_{context.target_T}.json'
 
     # 如果xgb_path不存在
     if not os.path.exists(xgb_path):
-        train_xgboost(context.target_T)
+        train_xgboost_classify(context.target_T)
 
     context.bst = xgb.Booster()
     context.bst.load_model(xgb_path)
@@ -58,20 +59,20 @@ def init(context):
 
     context.percent = 0
 
-
+# aigo
 def algo(context):
     now = context.now
     # 上一交易日
-    last_date = get_previous_trading_date(exchange='SHSE', date=now)
+    the_day_before = get_previous_trading_date(exchange='SHSE', date=now)
     # 获取持仓
     position = context.account().position(symbol=context.symbol, side=PositionSide_Long)
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    prediction, outcome = combined_model_predict(context, last_date)
+    predictied_trend = combined_model_predict(context, the_day_before)
 
     # 若预测值为上涨则买入
-    if prediction == 1:
+    if predictied_trend == 2 and not position:
         context.percent = 1
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -79,7 +80,7 @@ def algo(context):
         # print(context.percent)
 
     # 若预测下跌则清仓
-    if prediction == -1 and position:
+    if predictied_trend == 0 and position:
         context.percent = 0
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -99,7 +100,6 @@ def algo(context):
     if position and len(position) > 0 and todayClose.item() / position['vwap'] < 1 + context.sell_rate:
         order_close_all()
         # print("触发止损")
-
 
 def on_order_status(context, order):  # 用于打印交易信息
     # 标的代码
@@ -133,33 +133,13 @@ def on_order_status(context, order):  # 用于打印交易信息
         # print(f'{symbol} {side_effect} {volume}手, 价格{price}, 目标仓位{target_percent}, {order_type_word}委托, 成交')
 
 
-def combined_model_predict(context, last_date):
-    return_upper = context.threshold
-    return_lower = -context.threshold
+def combined_model_predict(context, the_day_before):
 
-    X_test, _ = lstm_to_xgboost(last_date, last_date, context.target_T)
-    # 将数据转换为DMatrix对象，XGBoost专用的数据结构
-    dtest = xgb.DMatrix(X_test)
 
-    # 预测，使用iteration_range指定使用的树的范围
-    # bst.best_iteration 是在训练时通过early stopping找到的最佳迭代次数
-    best_iteration = context.bst.best_iteration if hasattr(context.bst, 'best_iteration') else None
-    if best_iteration is not None:
-        Y_pred = context.bst.predict(dtest, iteration_range=(0, best_iteration + 1))
-    else:
-        # 如果没有使用早停或找不到最佳迭代次数，直接预测
-        Y_pred = context.bst.predict(dtest)
-    predicted_return = Y_pred[-1]
+    Y_true,Y_pred = xgb_predict(context.target_T,the_day_before,the_day_before )
+    predicted_trend = Y_pred[0]
 
-    # 打印日期和预测值
-    # print("预测日期：", last_date, f"预测未来{context.T}日的平均日收益率：", predicted_return)
-    if predicted_return > return_upper:
-        return 1, predicted_return
-    elif predicted_return < return_lower:
-        return -1, predicted_return  # 下跌
-    else:
-        return 0, predicted_return  # 震荡
-
+    return predicted_trend
 
 def on_backtest_finished(context, indicator):
     """
@@ -215,8 +195,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=test_start_date + ' 08:00:00',
-        backtest_end_time=test_end_date + ' 16:00:00',
+        backtest_start_time=val_start_date + ' 08:00:00',
+        backtest_end_time=val_end_date + ' 16:00:00',
         # backtest_start_time='2023-09-14 08:00:00',
         # backtest_end_time='2024-02-01 16:00:00',
         backtest_adjust=ADJUST_PREV,
@@ -302,19 +282,19 @@ if __name__ == '__main__':
     # 证券代码: 002594
     # 上市地: 深圳证券交易所
 
-    symbols = ['SHSE.600519', 'SZSE.300750', 'SHSE.601318', 'SHSE.600036', 'SZSE.000858', 'SHSE.601012', 'SZSE.000333','SHSE.600900', 'SHSE.601166', 'SZSE.002594']
+    # symbols = ['SHSE.600519', 'SZSE.300750', 'SHSE.601318', 'SHSE.600036', 'SZSE.000858', 'SHSE.601012', 'SZSE.000333','SHSE.600900', 'SHSE.601166', 'SZSE.002594']
+    symbols = ['SHSE.510300']
     # 参数列表，可以是从配置文件读取的
     paras_list = [
         {'symbol':symbol,'target_T': target_T, 'threshold': threshold}
         # for target_T in xgb_T_values
 
         for symbol in symbols
-        for target_T in [4]
+        for target_T in [1,2,3,4,5]
         for threshold in np.arange(0.001, 0.002, 0.001)
     ]
     optimization_results = parameter_optimization(paras_list, processes=3)
 
     # process_and_save_data(optimization_results, f'../results/combined_model/xgb_test_strategy_{config_id}.xlsx')
-    process_and_save_data(optimization_results, f'../../results/XGBoost_FLIXNet/xgb_test_backtest_robust2.xlsx')
-
-    # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')
+    process_and_save_data(optimization_results, f'../results/XGBoost_FLIXNet/xgb_val_backtest_{config_id}.xlsx')
+    print(f"所有策略已经运行完毕! 结果保存在'../results/XGBoost_FLIXNet/xgb_val_backtest_{config_id}.xlsx'")

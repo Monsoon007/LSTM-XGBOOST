@@ -6,6 +6,7 @@ import subprocess
 from gm.api import *
 
 import pandas as pd
+from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 from tqdm.contrib import itertools
 
@@ -17,16 +18,17 @@ from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
+import torch.nn.functional as F
 
 
 # 模型定义
 class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, output_dim, device):
+    def __init__(self, input_dim, hidden_dim, num_layers, device):
         super(LSTMModel, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.fc = nn.Linear(hidden_dim, 3)  # 输出维度修改为3, 分别对应下跌、震荡、上涨的预测概率，后面通过softmax激活函数输出预测类别
         self.device = device
 
     def forward(self, x):
@@ -34,7 +36,8 @@ class LSTMModel(nn.Module):
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(self.device)
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])
-        return out
+        # return F.softmax(out, dim=1)  # 使用softmax激活函数
+        return out  # 不使用softmax激活函数，因为还要为后面的CrossEntropyLoss提供数据
 
 
 def prepare_data(symbol, start_date, end_date, T, window_size):
@@ -51,20 +54,21 @@ def prepare_data(symbol, start_date, end_date, T, window_size):
     # print(f"Data shape: {data.shape}")
     X, Y = data_for_lstm(data, window_size)
     # print(f"Prepared data X: {X}, Y: {Y}")
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
+    # return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
+    return torch.tensor(X, dtype=torch.float32), torch.tensor(Y, dtype=torch.int64)  # Y现在应为一维，并确保为整数类型
 
 
 def train(model, device, train_loader, criterion, optimizer, epoch, writer):
     model.train()
     for batch_idx, (inputs, targets) in enumerate(train_loader):
-        inputs, targets = inputs.to(device), targets.to(device)
+        inputs = inputs.to(device)
+        targets = targets.to(device)  # 调整 targets 形状
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
 
-        # 每n个批次记录一次训练损失
         if batch_idx % 100 == 0:
             writer.add_scalar('Training Loss', loss.item(), epoch * len(train_loader) + batch_idx)
 
@@ -83,6 +87,7 @@ def test(model, device, test_loader, criterion):
     print(f'Test Loss: {test_loss}')
 
 
+
 def validate(model, device, val_loader, criterion, writer, epoch):
     model.eval()
     val_loss = 0.0
@@ -92,15 +97,19 @@ def validate(model, device, val_loader, criterion, writer, epoch):
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             val_loss += loss.item()
-    val_loss /= len(val_loader)
 
+    val_loss /= len(val_loader)
     writer.add_scalar('Validation Loss', val_loss, epoch)
 
     return val_loss
 
 
+
 def main():
-    output_dim = 1
+    """
+    主函数，用于训练给定参数组合下的一系列LSTM模型
+    """
+    # output_dim = 1
     epochs = 100
     batch_size = 16
     lr = 0.01  # 学习率
@@ -125,16 +134,16 @@ def main():
             val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size, shuffle=False)
 
             # 加载模型
-            model = LSTMModel(input_dim=X_val.shape[2], hidden_dim=hidden_dim, num_layers=num_layers,
-                              output_dim=output_dim, device=device)
+            model = LSTMModel(input_dim=X_val.shape[2], hidden_dim=hidden_dim, num_layers=num_layers, device=device)
             model.load_state_dict(torch.load(model_path))
             model.to(device)
             model.eval()
 
             # 设置损失函数
-            criterion = nn.MSELoss()
+            # criterion = nn.MSELoss()
+            criterion = nn.CrossEntropyLoss() #注意torch的交叉熵计算要求输入的targets从0开始，例如标签类别为0，1，2
 
-            # 计算在验证集上的MSE loss
+            # 计算在验证集上的loss
             val_loss = 0.0
             with torch.no_grad():
                 for inputs, targets in val_loader:
@@ -175,13 +184,19 @@ def main():
         else:
             print(f"Validation loader has {len(val_loader)} batches.")
 
-        model = LSTMModel(X_train.shape[2], hidden_dim, num_layers, output_dim, device).to(device)
-        criterion = nn.MSELoss()
+        model = LSTMModel(X_train.shape[2], hidden_dim, num_layers, device).to(device)
+        # criterion = nn.MSELoss()
+        criterion = nn.CrossEntropyLoss()
+
         optimizer = torch.optim.Adam(model.parameters(), lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
 
         best_val_loss = float("inf")
-        best_model_path = ""  # 验证集上最佳模型的保存路径
+
+        # 验证集上最佳模型的保存路径
+        best_model_path = os.path.join(model_save_dir,
+                                       f'best_lstm_model_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}.pth')
+
         for epoch in range(epochs):
             train(model, device, train_loader, criterion, optimizer, epoch, writer)
             val_loss = validate(model, device, val_loader, criterion, writer, epoch)
@@ -190,8 +205,6 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 # 保存验证集上最佳模型
-                best_model_path = os.path.join(model_save_dir,
-                                               f'best_lstm_model_T{T}_window{window_size}_hidden{hidden_dim}_layers{num_layers}.pth')
                 torch.save(model.state_dict(), best_model_path)
         # 保存每个超参数组合和其最佳验证损失的记录
         best_models_results.append({
@@ -257,7 +270,8 @@ def best_lstm_model(T=None):
         'hidden_dim': best_model['hidden_dim'],
         'num_layers': best_model['num_layers'],
         'model_path': best_model['best_model_path'],
-        'val_r2': lstm_evaluate(best_model, set="val", only_r2=True),
+        # 'val_r2': lstm_evaluate(best_model, set="val", only_r2=True),
+        'val_my_score': lstm_evaluate_classify(best_model, set="val"),
     }
 
 
@@ -271,8 +285,8 @@ def best_lstms(topK=10, T_values=None):
     for T in tqdm(T_values, desc=f'Running {inspect.currentframe().f_code.co_name}'):
         best_model = best_lstm_model(T)
         best_lstms.append(best_model)
-    # 按照val_r2的第二个位置的r2进行降序
-    best_lstms.sort(key=lambda x: x['val_r2'][1], reverse=True)
+    # 按照最后一列的score的第二个位置的值进行排序，注意去查看best_lstm_model中score的定义
+    best_lstms = sorted(best_lstms, key=lambda x: x['val_my_score'][1], reverse=True)
     # 取前topK个
     best_lstms = best_lstms[:topK]
     if T_values is None:
@@ -281,10 +295,11 @@ def best_lstms(topK=10, T_values=None):
         return [best_lstm for best_lstm in best_lstms if best_lstm['T'] in T_values]
 
 
-def lstm_predict(model_dict, start_date, end_date):
+def lstm_predict_reg(model_dict, start_date, end_date):
     """
     model_dict: 包含模型超参数的字典
     返回结果为包含模型预测值和真实值的DataFrame
+    该方法只适用于回归任务
     """
     X_test, Y_true = prepare_data(symbol, start_date, end_date, model_dict['T'], model_dict['window_size'])
     # 检查如果GPU没有使用成功，raise error
@@ -296,7 +311,7 @@ def lstm_predict(model_dict, start_date, end_date):
         model_path = model_dict['model_path']
     except KeyError:
         model_path = model_dict['best_model_path']
-    model = LSTMModel(X_test.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], 1, device).to(device)
+    model = LSTMModel(X_test.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], device).to(device)
     model.load_state_dict(torch.load(os.path.join('../model/', model_path)))
     model.eval()
     with torch.no_grad():
@@ -312,9 +327,42 @@ def lstm_predict(model_dict, start_date, end_date):
     return result
 
 
-def lstm_evaluate(model_dict, set="val", only_r2=False):
+def lstm_predict(model_dict, start_date, end_date):
+    import torch.nn.functional as F
+
+    X_test, Y_true = prepare_data(symbol, start_date, end_date, model_dict['T'], model_dict['window_size'])
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        raise ValueError('GPU not available')
+    try:
+        model_path = model_dict['model_path']
+    except KeyError:
+        model_path = model_dict['best_model_path']
+
+    model = LSTMModel(X_test.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], device).to(device)
+    model.load_state_dict(torch.load(os.path.join('../model/', model_path)))
+    model.eval()
+
+    with torch.no_grad():
+        outputs = model(X_test.float().to(device))
+        # 将logits转换为概率
+        probabilities = F.softmax(outputs, dim=1).cpu().detach().numpy()
+
+    Y_pred = probabilities.argmax(axis=1)  # 获取最大概率的索引，用于分类
+    # 处理真实值与预测概率并合并为DataFrame
+    Y_true = Y_true.flatten()
+    Y_true = pd.DataFrame(Y_true, columns=['Y_true'])
+    Y_pred = pd.DataFrame(Y_pred, columns=['Y_pred'])
+    probabilities_df = pd.DataFrame(probabilities, columns=['Prob_down', 'Prob_stable', 'Prob_up'])
+    result = pd.concat([Y_true, Y_pred, probabilities_df], axis=1)
+    result.index = pd.date_range(start=start_date, periods=len(result), freq='B')
+    return result
+
+def lstm_evaluate_r2(model_dict, set="val", only_r2=False):
     """
-    mode为
+    计算LSTM模型在验证集或测试集上的R2值，并绘制折线图
+    只有当LSTM是回归任务时，才能够使用
     """
     if set == "val":
         start_date = val_start_date
@@ -352,6 +400,41 @@ def lstm_evaluate(model_dict, set="val", only_r2=False):
     print(f'图片已经保存在{savePath}')
     return model_dict["T"], r2
 
+def lstm_evaluate_classify(model_dict,set="val"):
+    if set == "val":
+        start_date = val_start_date
+        end_date = val_end_date
+        pathStr = 'Val'
+    elif set == "test":
+        start_date = test_start_date
+        end_date = test_end_date
+        pathStr = 'Test'
+    elif set == 'train':
+        start_date = train_start_date
+        end_date = train_end_date
+        pathStr = 'Train'
+    df = lstm_predict(model_dict, start_date, end_date)
+
+    return model_dict["T"], calculate_performance_score(df['Y_true'], df['Y_pred'])
+
+def calculate_performance_score(y_true, y_pred):
+    # 计算混淆矩阵
+    conf_matrix = confusion_matrix(y_true, y_pred)
+    conf_matrix = pd.DataFrame(conf_matrix, columns=['Predicted 0', 'Predicted 1', 'Predicted 2'],
+                               index=['Actual 0', 'Actual 1', 'Actual 2'])
+
+    # 计算预测为0和2的召回率
+    recall_0 = conf_matrix.iloc[0, 0] / conf_matrix.iloc[0, :].sum() if conf_matrix.iloc[0, :].sum() > 0 else 0
+    recall_2 = conf_matrix.iloc[2, 2] / conf_matrix.iloc[2, :].sum() if conf_matrix.iloc[2, :].sum() > 0 else 0
+
+    # 计算假正类率
+    fpr_0 = conf_matrix.iloc[0, 2] / conf_matrix.iloc[0, :].sum() if conf_matrix.iloc[0, :].sum() > 0 else 0
+    fpr_2 = conf_matrix.iloc[2, 0] / conf_matrix.iloc[2, :].sum() if conf_matrix.iloc[2, :].sum() > 0 else 0
+
+    # 计算综合得分
+    score = recall_0 + recall_2 - fpr_0 - fpr_2
+
+    return score
 
 def get_lstm_r2_dict(set='val', updated=False):
     # 定义文件路径
@@ -367,7 +450,7 @@ def get_lstm_r2_dict(set='val', updated=False):
     # 如果需要更新或文件不存在，则重新计算
     r2_dict = {}
     for T in tqdm(T_values, desc=f'lstm_evaluate in {set} set'):
-        _, r2 = lstm_evaluate(best_lstm_model(T), set, only_r2=True)
+        _, r2 = lstm_evaluate_r2(best_lstm_model(T), set, only_r2=True)
         r2_dict[int(T)] = r2  # 确保键是Python的int类型
 
     # 将字典转换为DataFrame，并保存到CSV文件
@@ -384,7 +467,33 @@ def get_lstm_r2_series(set='val', updated=False):
     r2_series.index.name = 'T'
     r2_series.name = 'R2'
     return r2_series
+def get_lstm_score_series(set='val', updated=False):
+    # 定义文件路径
+    file_path = f'../results/LSTM/LSTM_{set}_score_series.csv'
 
+    # 如果不需要更新且文件已存在，则直接从CSV文件加载数据
+    if not updated and os.path.exists(file_path):
+        df = pd.read_csv(file_path, index_col=0)  # 假设第一列是索引
+        score_series = df['Score']
+        print(f'Loaded LSTM {set} score series from {file_path}')
+        return score_series
+    print(f'Calculating LSTM {set} score series...')
+    # 如果需要更新或文件不存在，则重新计算
+    score_series = {}
+    for T in tqdm(T_values, desc=f'lstm_evaluate in {set} set'):
+        _, score = lstm_evaluate_classify(best_lstm_model(T), set)
+        score_series[int(T)] = score  # 确保键是Python的int类型
+
+    # 将字典转换为DataFrame，并保存到CSV文件
+    df = pd.DataFrame(list(score_series.items()), columns=['T', 'Score'])
+    df.to_csv(file_path, index=False)
+
+    # 转换为Series
+    score_series = df['Score']
+    score_series.index = df['T']
+    score_series.name = 'lstm_Score'
+
+    return score_series
 
 symbol = 'SHSE.510300'
 
@@ -416,7 +525,7 @@ window_sizes = param_config['window_sizes']
 hidden_dims = param_config['hidden_dims']
 num_layers_list = param_config['num_layers_list']
 
-config_id = 6
+config_id = 7
 
 # 将config追加保存到configs.xlsx文件中
 configs = {
@@ -446,4 +555,4 @@ model_save_dir = 'lstm_models_' + str(config_id)
 results_path = f'../results/bestLSTMmodels_results/best_models_results_{config_id}.xlsx'
 
 if __name__ == "__main__":
-    main()
+    main()  # 训练给定参数组合下的一系列模型

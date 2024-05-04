@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from data.get_data import get_common_data, my_get_previous_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
-    config_id, val_start_date, val_end_date
+    config_id, val_start_date, val_end_date, lstm_predict
 import pandas as pd
 
 
@@ -35,11 +35,11 @@ def init(context):
     # 导入上下文
     from gm.model.storage import context
 
-    model_dict = best_lstm_model(T=context.T)
-    context.model_path = model_dict['model_path']
-    context.window_size = model_dict['window_size']
-    context.hidden_dim = model_dict['hidden_dim']
-    context.num_layers = model_dict['num_layers']
+    context.model_dict = best_lstm_model(T=context.T)
+    context.model_path = context.model_dict['model_path']
+    context.window_size = context.model_dict['window_size']
+    context.hidden_dim = context.model_dict['hidden_dim']
+    context.num_layers = context.model_dict['num_layers']
     # context.T = model_dict['T']
     context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -72,10 +72,10 @@ def algo(context):
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    prediction, outcome = LSTM_predict(context, the_day_before)
+    predictied_trend = LSTM_predict(context, the_day_before)
 
     # 若预测值为上涨则买入
-    if prediction == 1:
+    if predictied_trend == 2 and not position:
         context.percent = 1
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -83,7 +83,7 @@ def algo(context):
         # print(context.percent)
 
     # 若预测下跌则清仓
-    if prediction == -1 and position:
+    if predictied_trend == 0 and position:
         context.percent = 0
         order_target_percent(symbol=context.symbol, percent=context.percent, order_type=OrderType_Market,
                              position_side=PositionSide_Long)
@@ -144,29 +144,11 @@ def LSTM_predict(context, the_day_before):
     return_upper = context.threshold
     return_lower = -context.threshold
 
-    # modelPath和超参数已经在run_strategy中加载
+    result = lstm_predict(context.model_dict,the_day_before,the_day_before)
 
-    # X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(last_date, context.window_size + 100),
-    #                          my_get_previous_n_trading_date(last_date,1), context.T, context.window_size)
-    X_test, _ = prepare_data(context.symbol, my_get_previous_n_trading_date(the_day_before, context.window_size + 100),
-                             the_day_before, context.T, context.window_size) #已经是上一个交易日，避免了利用当天收盘价等“未来信息”
-    # 加载模型
-    model = LSTMModel(X_test.shape[2], int(context.hidden_dim), context.num_layers, 1, context.device).to(
-        context.device)
-    model.load_state_dict(torch.load(context.model_path))
-    model.eval()  # 进入评估模式
+    predicted_trend = result['Y_pred'][0]
 
-    outputs = model(X_test.float().to(context.device))
-    predicted_return = outputs.cpu().detach().numpy().flatten()
-    predicted_return = predicted_return[-1]
-    # 打印日期和预测值
-    # print("预测日期：", last_date, f"预测未来{context.T}日的平均日收益率：", predicted_return)
-    if predicted_return > return_upper:
-        return 1, predicted_return
-    elif predicted_return < return_lower:
-        return -1, predicted_return  # 下跌
-    else:
-        return 0, predicted_return  # 震荡
+    return predicted_trend
 
 
 def on_backtest_finished(context, indicator):
@@ -231,8 +213,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=test_start_date + ' 08:00:00',
-        backtest_end_time=test_end_date + ' 16:00:00',
+        backtest_start_time=val_start_date + ' 08:00:00',
+        backtest_end_time=val_end_date + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -272,12 +254,12 @@ if __name__ == '__main__':
     paras_list = [
         {'T': T, 'threshold': threshold}
         # for T in T_values
-        for T in [4]
-        for threshold in np.arange(0.001, 0.002, 0.001)
+        for T in [1]
+        for threshold in np.arange(0.0001, 0.0035, 0.0005)
     ]
     optimization_results = parameter_optimization(paras_list)
-
+    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}_searchThreshold.xlsx'
     # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
-    process_and_save_data(optimization_results, f'../results/LSTM/lstm_test_backtest.xlsx')
-
+    process_and_save_data(optimization_results, savePath)
+    print(f"所有策略已经运行完毕! 结果保存在{savePath}中！")
     # process_and_save_data(optimization_results, f'../results/optimization_results_3.xlsx')

@@ -30,6 +30,11 @@ def add_return_column(data, T=3):
     # 所以 avg = y/T =(close(T)/close-1)/T
     data['avg_daily_return_' + str(T)] = (data['close'].shift(-T) / data['close'] - 1) / T
 
+def add_trend_column(data, T=3,threshold=0.001):
+    """
+    向DataFrame添加未来T日的平均日收益率对应的标的趋势: 如果收益率大于阈值，则为2，如果收益率小于阈值，则为0，否则为1。从0开始是为了适应torch的交叉熵计算要求
+    """
+    data[str(T)+'_return_to_trend'] = ((data['close'].shift(-T) / data['close'] - 1) / T).apply(lambda x: 2 if x>threshold else 0 if x<-threshold else 1)
 
 def add_ma_columns(data, ma_periods):
     """
@@ -171,7 +176,7 @@ def my_get_next_n_trading_date(date, counts=1, exchange='SHSE'):
     return get_next_n_trading_dates(exchange,date,counts)[-1]
 
 
-def get_common_data(symbol, start_date, end_date, T):
+def get_common_data(symbol, start_date, end_date, T,threshold=0.001):
     # 设置token
     set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
     macro_data = pd.read_excel('../data/macro.xlsx')
@@ -204,7 +209,8 @@ def get_common_data(symbol, start_date, end_date, T):
     # 将data的索引设置为tz-naive
     trade_data.index = trade_data.index.tz_localize(None)
     data = trade_data
-    add_return_column(data, T)
+    # add_return_column(data, T)
+    add_trend_column(data,T,threshold)
     add_ma_columns(data, [5, 10, 20, 60, max_lead])
     add_ema_columns(data, [5, 10, 20, 60, max_lead])
     add_rsi_factor(data)
@@ -221,10 +227,11 @@ def get_common_data(symbol, start_date, end_date, T):
     data = data.join(macro_data, how='left')
     # 去除有空值的行
     data.dropna(inplace=True)
-    # 将'avg_daily_return_'+str(T)列放在最后
+    # 将监督变量列放在最后
     cols = list(data.columns)
-    cols.remove('avg_daily_return_' + str(T))
-    cols.append('avg_daily_return_' + str(T))
+    supervised_col_name = str(T)+'_return_to_trend'
+    cols.remove(supervised_col_name)
+    cols.append(supervised_col_name)
     data = data[cols]
     return data
 

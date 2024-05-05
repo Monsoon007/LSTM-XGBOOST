@@ -58,7 +58,6 @@ def algo(context):
     # predictied_trend = 2
     context.i = context.i + 1
 
-
     # 若预测值为上涨则买入
     if predictied_trend == 2 and not position:
         context.percent = 1
@@ -151,25 +150,23 @@ def on_backtest_finished(context, indicator):
         'pnl_ratio_annual': indicator['pnl_ratio_annual'],
 
     }
-    print(result)
+    # print(result)
     context.results.append(result)
 
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 def parameter_optimization(paras_list, processes=4):
-    pool = multiprocessing.Pool(processes)  # 根据系统性能调整进程数
-    results = []
-    pbar = tqdm(total=len(paras_list), desc="Optimizing")
-
-    def update(*args):
-        pbar.update()
-
-    for params in paras_list:
-        result = pool.apply_async(run_strategy, args=(params,), callback=update)
-        results.append(result)
-    pool.close()
-    pool.join()
-    pbar.close()
-    return [result.get() for result in results]
+    with ProcessPoolExecutor(max_workers=processes) as executor:
+        futures = {executor.submit(run_strategy, params): params for params in paras_list}
+        results = []
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                results.append(result)
+                print(f"任务 {futures[future]} 完成，结果: {result}")
+            except Exception as exc:
+                print(f"任务 {futures[future]} 生成异常: {exc}")
+        return results
 
 
 def run_strategy(params):
@@ -248,22 +245,21 @@ def process_and_save_data(optimization_results, file_name):
     df.to_excel(file_name, index=False)
 
 
-
 if __name__ == '__main__':
     # 参数列表，可以是从配置文件读取的
     sets = ['val']
 
     paras_list = [
-        {'set':set,'T': T, 'threshold': threshold}
+        {'set': set, 'T': T, 'threshold': threshold}
         for set in sets
-        for T in T_values
-        # for T in [29]
+        # for T in T_values
+        for T in [9,24]
         # for threshold in np.arange(0.0001, 0.0035, 0.0005)
         for threshold in np.arange(0.001, 0.002, 0.001)
 
     ]
-    optimization_results = parameter_optimization(paras_list, processes=1)
-    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}.xlsx'
+    optimization_results = parameter_optimization(paras_list, processes=8)
+    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}_support.xlsx'
     # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
     process_and_save_data(optimization_results, savePath)
     print(f"所有策略已经运行完毕! 结果保存在{savePath}中！")

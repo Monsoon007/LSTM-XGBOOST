@@ -50,7 +50,7 @@ def single_scatter_with_envelope(series, base_color, marker, model_name='LSTM', 
     if show:
         plt.show()
 
-def comparison_scatter_with_envelope(series1, series2, title='Scatter Plot with Fitting Lines', xlabel=None, ylabel=None, model_name1='Model 1', model_name2='Model 2', save=False, save_path='comparison_plot.png'):
+def comparison_scatter_with_envelope(series1, series2, title='Scatter Plot with Fitting Lines', xlabel=None, ylabel=None, model_name1='Model 1', model_name2='Model 2',set='val', save=False, save_path='comparison_plot.png'):
     """
     在同一图表中绘制两个数据集的散点图和包络线，用以比较。
 
@@ -71,9 +71,9 @@ def comparison_scatter_with_envelope(series1, series2, title='Scatter Plot with 
 
     plt.figure(figsize=(10, 6))
     # 绘制第一个数据集
-    single_scatter_with_envelope(series1, 'blue', 'o', model_name=model_name1, show=False)
+    single_scatter_with_envelope(series1, 'blue', 'o', model_name=model_name1, set=set,show=False)
     # 绘制第二个数据集
-    single_scatter_with_envelope(series2, 'green', 'x', model_name=model_name2, show=False)
+    single_scatter_with_envelope(series2, 'green', 'x', model_name=model_name2,set=set,show=False)
 
     plt.title(title)
     plt.xlabel(xlabel)

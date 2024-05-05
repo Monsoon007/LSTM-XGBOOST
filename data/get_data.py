@@ -235,6 +235,7 @@ def get_common_data(symbol, start_date, end_date, T,threshold=0.001):
     data = data[cols]
     return data
 
+set_token('9c0950e38c59552734328ad13ad93b6cc44ee271') # 本数据获取代码，依赖掘金客户端提供的接口，这是需要设置的token
 
 if __name__ == '__main__':
     # 获取数据

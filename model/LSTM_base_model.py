@@ -51,11 +51,14 @@ def prepare_data(symbol, start_date, end_date, T, window_size):
     # 设置token
     set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
     data = get_common_data(symbol, my_get_previous_n_trading_date(start_date, counts=window_size), end_date, T)
-    # print(f"Data shape: {data.shape}")
-    X, Y = data_for_lstm(data, window_size)
+    # 此时data的长度大于后面的Y，多余的一个window_size的数据，后面data_for_lstm会处理掉
+    # 所以dateIndex要丢掉前window_size个数据
+    dateIndex = data.index[window_size:]
+    dateIndex.name = 'date'
+    X, Y = data_for_lstm(data, window_size) #这里会将数据处理为LSTM需要的格式，并且使给出的Y能覆盖要求的start_date到end_date的数据
     # print(f"Prepared data X: {X}, Y: {Y}")
     # return torch.tensor(X, dtype=torch.float32), torch.tensor(Y.reshape(-1, 1), dtype=torch.float32)
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(Y, dtype=torch.int64)  # Y现在应为一维，并确保为整数类型
+    return dateIndex, torch.tensor(X, dtype=torch.float32),  torch.tensor(Y, dtype=torch.int64)  # Y现在应为一维，并确保为整数类型
 
 
 def train(model, device, train_loader, criterion, optimizer, epoch, writer):
@@ -330,7 +333,7 @@ def lstm_predict_reg(model_dict, start_date, end_date):
 def lstm_predict(model_dict, start_date, end_date):
     import torch.nn.functional as F
 
-    X_test, Y_true = prepare_data(symbol, start_date, end_date, model_dict['T'], model_dict['window_size'])
+    dateIndex, X, Y_true = prepare_data(symbol, start_date, end_date, model_dict['T'], model_dict['window_size'])
     if torch.cuda.is_available():
         device = torch.device('cuda')
     else:
@@ -340,12 +343,12 @@ def lstm_predict(model_dict, start_date, end_date):
     except KeyError:
         model_path = model_dict['best_model_path']
 
-    model = LSTMModel(X_test.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], device).to(device)
+    model = LSTMModel(X.shape[2], int(model_dict['hidden_dim']), model_dict['num_layers'], device).to(device)
     model.load_state_dict(torch.load(os.path.join('../model/', model_path)))
     model.eval()
 
     with torch.no_grad():
-        outputs = model(X_test.float().to(device))
+        outputs = model(X.float().to(device))
         # 将logits转换为概率
         probabilities = F.softmax(outputs, dim=1).cpu().detach().numpy()
 
@@ -356,7 +359,7 @@ def lstm_predict(model_dict, start_date, end_date):
     Y_pred = pd.DataFrame(Y_pred, columns=['Y_pred'])
     probabilities_df = pd.DataFrame(probabilities, columns=['Prob_down', 'Prob_stable', 'Prob_up'])
     result = pd.concat([Y_true, Y_pred, probabilities_df], axis=1)
-    result.index = pd.date_range(start=start_date, periods=len(result), freq='B')
+    result.index = dateIndex
     return result
 
 def lstm_evaluate_r2(model_dict, set="val", only_r2=False):

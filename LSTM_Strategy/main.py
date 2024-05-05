@@ -14,7 +14,7 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from data.get_data import get_common_data, my_get_previous_n_trading_date
+from data.get_data import get_common_data, my_get_previous_n_trading_date, my_get_next_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
     config_id, val_start_date, val_end_date, lstm_predict
 import pandas as pd
@@ -32,25 +32,7 @@ def init(context):
     context.symbol = 'SHSE.510300'
     # random.seed(1)
 
-    # 导入上下文
-    from gm.model.storage import context
-
-    context.model_dict = best_lstm_model(T=context.T)
-    context.model_path = context.model_dict['model_path']
-    context.window_size = context.model_dict['window_size']
-    context.hidden_dim = context.model_dict['hidden_dim']
-    context.num_layers = context.model_dict['num_layers']
-    # context.T = model_dict['T']
-    context.model_path = os.path.join('../model/', context.model_path)
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # base_data = get_common_data('SHSE.510300', '2008-01-01', '2020-01-01', context.T)
-    # base_data的最后一列为未来T日的平均日收益率
-
-    # # kmeans聚类，用于后续交易时的判断
-    # kmeans = KMeans(n_clusters=20, random_state=0, algorithm="elkan").fit(base_data.iloc[:, -1].values.reshape(-1, 1))
-    # returns = kmeans.cluster_centers_
-    # context.max_return = np.max(returns)
-    # context.min_return = np.min(returns)
 
     # 止盈幅度
     context.earn_rate = 2
@@ -72,7 +54,10 @@ def algo(context):
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    predictied_trend = LSTM_predict(context, the_day_before)
+    predictied_trend = context.Predictied_trends['Y_pred'][context.i]
+    # predictied_trend = 2
+    context.i = context.i + 1
+
 
     # 若预测值为上涨则买入
     if predictied_trend == 2 and not position:
@@ -137,18 +122,18 @@ def on_order_status(context, order):  # 用于打印交易信息
         # print(f'{symbol} {side_effect} {volume}手, 价格{price}, 目标仓位{target_percent}, {order_type_word}委托, 成交')
 
 
-def LSTM_predict(context, the_day_before):
-    """
-    last_date: 上一个交易日,
-    """
-    return_upper = context.threshold
-    return_lower = -context.threshold
-
-    result = lstm_predict(context.model_dict,the_day_before,the_day_before)
-
-    predicted_trend = result['Y_pred'][0]
-
-    return predicted_trend
+# def LSTM_predict(context, the_day_before):
+#     """
+#     last_date: 上一个交易日,
+#     """
+#     return_upper = context.threshold
+#     return_lower = -context.threshold
+#
+#     result = lstm_predict(context.model_dict,the_day_before,the_day_before)
+#
+#     predicted_trend = result['Y_pred'][0]
+#
+#     return predicted_trend
 
 
 def on_backtest_finished(context, indicator):
@@ -157,20 +142,21 @@ def on_backtest_finished(context, indicator):
     """
     result = {
         'params': context.params,
+        'set': context.set,
         'T': context.T,
         'threshold': context.threshold,
         'pnl_ratio': indicator['pnl_ratio'],
         'sharp_ratio': indicator['sharp_ratio'],
         'max_drawdown': indicator['max_drawdown'],
-        'pnl_ratio_annual': indicator['pnl_ratio_annual']
+        'pnl_ratio_annual': indicator['pnl_ratio_annual'],
 
     }
     print(result)
     context.results.append(result)
 
 
-def parameter_optimization(paras_list):
-    pool = multiprocessing.Pool(processes=4)  # 根据系统性能调整进程数
+def parameter_optimization(paras_list, processes=4):
+    pool = multiprocessing.Pool(processes)  # 根据系统性能调整进程数
     results = []
     pbar = tqdm(total=len(paras_list), desc="Optimizing")
 
@@ -193,9 +179,22 @@ def run_strategy(params):
     context.params = params
     context.T = params['T']
     context.threshold = params['threshold']
-
+    context.set = params['set']
+    Predictied_trends_Path = f'../results/LSTM/lstm_{context.T}_{context.set}_prediction_{config_id}.xlsx'
+    set = params['set']
+    # 如果存在，直接读入
+    if os.path.exists(Predictied_trends_Path):
+        context.Predictied_trends = pd.read_excel(Predictied_trends_Path, index_col=0)
+    else:
+        context.Predictied_trends = lstm_predict(best_lstm_model(params['T']), eval(f'{set}_start_date'),
+                                                 eval(f'{set}_end_date'))
+        # 保存预测结果
+        context.Predictied_trends.to_excel(Predictied_trends_Path)
+    context.i = 0
     context.results = []
 
+    # backtest_start_time = my_get_next_n_trading_date(date=eval(f'{set}_start_date'), counts=1) + ' 08:00:00'
+    # backtest_end_time = my_get_next_n_trading_date(date=eval(f'{set}_end_date'), counts=1) + ' 16:00:00'
     '''
         strategy_id策略ID, 由系统生成
         filename文件名, 请与本文件名保持一致
@@ -213,8 +212,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=val_start_date + ' 08:00:00',
-        backtest_end_time=val_end_date + ' 16:00:00',
+        backtest_start_time=my_get_next_n_trading_date(date=eval(f'{set}_start_date'), counts=1) + ' 08:00:00',
+        backtest_end_time=my_get_next_n_trading_date(date=eval(f'{set}_end_date'), counts=1) + ' 16:00:00',
         backtest_adjust=ADJUST_PREV,
         backtest_initial_cash=10000000,
         backtest_commission_ratio=0.0001,
@@ -249,16 +248,22 @@ def process_and_save_data(optimization_results, file_name):
     df.to_excel(file_name, index=False)
 
 
+
 if __name__ == '__main__':
     # 参数列表，可以是从配置文件读取的
+    sets = ['val']
+
     paras_list = [
-        {'T': T, 'threshold': threshold}
-        # for T in T_values
-        for T in [1]
-        for threshold in np.arange(0.0001, 0.0035, 0.0005)
+        {'set':set,'T': T, 'threshold': threshold}
+        for set in sets
+        for T in T_values
+        # for T in [29]
+        # for threshold in np.arange(0.0001, 0.0035, 0.0005)
+        for threshold in np.arange(0.001, 0.002, 0.001)
+
     ]
-    optimization_results = parameter_optimization(paras_list)
-    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}_searchThreshold.xlsx'
+    optimization_results = parameter_optimization(paras_list, processes=1)
+    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}.xlsx'
     # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
     process_and_save_data(optimization_results, savePath)
     print(f"所有策略已经运行完毕! 结果保存在{savePath}中！")

@@ -20,7 +20,7 @@ from model.LSTM_base_model import LSTMModel, prepare_data, symbol, train_start_d
 from torch.utils.tensorboard import SummaryWriter
 
 
-def lstm_to_xgboost(start_date, end_date, target_T):
+def lstm_to_xgboost(start_date, end_date, target_T,symbol='SHSE.510300'):
     data = get_common_data(symbol, start_date, end_date, target_T)
 
     # 取Y为data的最后一列
@@ -146,12 +146,12 @@ def train_xgboost_classify(target_T=7):
     plt.close()
 
 
-def xgb_predict(target_T, start_date, end_date):
+def xgb_predict(target_T, start_date, end_date,symbol='SHSE.510300'):
     """
     返回Y_true, Y_pred
     """
     # 准备数据
-    X, Y_true = lstm_to_xgboost(start_date, end_date, target_T)
+    X, Y_true = lstm_to_xgboost(start_date, end_date, target_T,symbol=symbol)
     # 加载模型
     bst = xgb.Booster()
 
@@ -168,7 +168,10 @@ def xgb_predict(target_T, start_date, end_date):
     Y_pred = bst.predict(dtest) #此时输出为N行三列，每一行代表一个样本，三列分别代表三个类别的概率
     #转换为一列，即选择概率最大的为答案
     Y_pred = np.argmax(Y_pred, axis=1)
-    return Y_true, Y_pred
+    # 合并为DataFrame
+    Y_true_pred = pd.DataFrame({'Y_true': Y_true, 'Y_pred': Y_pred})
+
+    return Y_true_pred
 
 
 def xgb_evaluate_reg(target_T, set="val", only_r2=False):
@@ -288,7 +291,18 @@ def get_xgb_score_series(set='val', updated=False):
 
     return score_series
 
-best_lstms = best_lstms(topK=30, T_values=list(np.arange(1, 31, 3)))
+bestlstmsPath = f'../results/XGBoost_FLIXNet/best_lstms.xlsx'
+# 检查是否存在
+if os.path.exists(bestlstmsPath):
+    best_lstms = pd.read_excel(bestlstmsPath)
+    # 转换为字典列表
+    best_lstms = best_lstms.to_dict('records')
+else:
+    best_lstms = best_lstms(topK=30, T_values=list(np.arange(1, 31, 3)))
+    # best_lstms是一系列字典组成的列表，转换为DataFrame并保存
+    best_lstms = pd.DataFrame(best_lstms)
+    best_lstms.to_excel(bestlstmsPath, index=False)
+
 xgb_T_values = list(np.arange(1, 31))
 modelDirectory = f'../model/xgb_models_{config_id}'
 

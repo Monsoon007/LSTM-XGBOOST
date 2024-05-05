@@ -4,6 +4,7 @@ from __future__ import print_function, absolute_import
 import ast
 import multiprocessing
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from random import random
 
 import numpy as np
@@ -14,7 +15,7 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from data.get_data import get_common_data, my_get_previous_n_trading_date
+from data.get_data import get_common_data, my_get_previous_n_trading_date, my_get_next_n_trading_date
 from model.LSTM_base_model import best_lstm_model, prepare_data, LSTMModel, T_values, test_start_date, test_end_date, \
     config_id, val_start_date, val_end_date
 from model.my_xgboost import lstm_to_xgboost, xgb_T_values, xgb_predict, modelDirectory, train_xgboost_classify
@@ -35,19 +36,7 @@ def init(context):
     # context.symbol = 'SHSE.510300'
     # random.seed(1)
 
-    # 导入上下文
-    from gm.model.storage import context
-
     context.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    xgb_path = f'{modelDirectory}/xgb_model_{context.target_T}.json'
-
-    # 如果xgb_path不存在
-    if not os.path.exists(xgb_path):
-        train_xgboost_classify(context.target_T)
-
-    context.bst = xgb.Booster()
-    context.bst.load_model(xgb_path)
 
     # 止盈幅度
     context.earn_rate = 2
@@ -69,7 +58,9 @@ def algo(context):
     # print(">>>>>>>>>>>\n")
     # print(str(now) + "\n")
     # try:
-    predictied_trend = combined_model_predict(context, the_day_before)
+    predictied_trend = context.Predictied_trends['Y_pred'][context.i]
+
+    context.i = context.i + 1
 
     # 若预测值为上涨则买入
     if predictied_trend == 2 and not position:
@@ -133,13 +124,13 @@ def on_order_status(context, order):  # 用于打印交易信息
         # print(f'{symbol} {side_effect} {volume}手, 价格{price}, 目标仓位{target_percent}, {order_type_word}委托, 成交')
 
 
-def combined_model_predict(context, the_day_before):
-
-
-    Y_true,Y_pred = xgb_predict(context.target_T,the_day_before,the_day_before )
-    predicted_trend = Y_pred[0]
-
-    return predicted_trend
+# def combined_model_predict(context, the_day_before):
+#
+#
+#     Y_true,Y_pred = xgb_predict(context.target_T,the_day_before,the_day_before )
+#     predicted_trend = Y_pred[0]
+#
+#     return predicted_trend
 
 def on_backtest_finished(context, indicator):
     """
@@ -151,20 +142,13 @@ def on_backtest_finished(context, indicator):
         'sharp_ratio': indicator['sharp_ratio'],
         'max_drawdown': indicator['max_drawdown'],
         'pnl_ratio_annual': indicator['pnl_ratio_annual'],
-        'T': context.target_T,
+        'T': context.T,
         'symbol': context.symbol,
+        'set': context.set,
+        'threshold': context.threshold,
     }
-    # 将result转换为dataframe
-    # df = pd.DataFrame([result])
-    # # 保存结果
-    # path = f'../results/combined_model/xgb_test_strategy_{config_id}_test.xlsx'
-    # # 追加保存
-    # if os.path.exists(path):
-    #     df.to_excel(path, index=False, header=False, mode='a')
-    # else:
-    #     df.to_excel(path, index=False)
-    print(result)
-    context.results.append(result)
+    # print(result)
+    context.result = result
 
 
 def run_strategy(params):
@@ -172,12 +156,21 @@ def run_strategy(params):
     from gm.model.storage import context
 
     context.params = params
-    context.symbol = params['symbol']
-    context.target_T = int(params['target_T'])
+    context.T = params['T']
     context.threshold = params['threshold']
-
-    context.results = []
-
+    context.set = params['set']
+    context.symbol = params['symbol']
+    Predictied_trends_Path = f'../results/XGBoost_FLIXNet/Predictied_trends_{context.symbol}_{context.set}_{context.T}_{context.threshold}.xlsx'
+    set = params['set']
+    # 如果存在，直接读入
+    if os.path.exists(Predictied_trends_Path):
+          context.Predictied_trends = pd.read_excel(Predictied_trends_Path)
+    else:
+        context.Predictied_trends = xgb_predict(context.T, val_start_date, val_end_date, context.symbol)
+        # 保存预测结果
+        context.Predictied_trends.to_excel(Predictied_trends_Path)
+    context.i = 0
+    context.result = dict()
     '''
         strategy_id策略ID, 由系统生成
         filename文件名, 请与本文件名保持一致
@@ -195,8 +188,8 @@ def run_strategy(params):
         filename='main.py',
         mode=MODE_BACKTEST,
         token='9c0950e38c59552734328ad13ad93b6cc44ee271',
-        backtest_start_time=val_start_date + ' 08:00:00',
-        backtest_end_time=val_end_date + ' 16:00:00',
+        backtest_start_time=my_get_next_n_trading_date(date=eval(f'{set}_start_date'), counts=1) + ' 08:00:00',
+        backtest_end_time=my_get_next_n_trading_date(date=eval(f'{set}_end_date'), counts=1) + ' 16:00:00',
         # backtest_start_time='2023-09-14 08:00:00',
         # backtest_end_time='2024-02-01 16:00:00',
         backtest_adjust=ADJUST_PREV,
@@ -204,7 +197,7 @@ def run_strategy(params):
         backtest_commission_ratio=0.0001,
         backtest_slippage_ratio=0.0001,
         backtest_match_mode=1)
-    return context.results
+    return context.result
 
 
 def process_and_save_data(optimization_results, file_name):
@@ -213,88 +206,83 @@ def process_and_save_data(optimization_results, file_name):
     """
     data = pd.DataFrame(optimization_results)
 
-    # 检查第一行，如果是字符串则转换回字典，如果已经是字典则直接使用
-    first_row_data = data.iloc[0, 0]
-    if isinstance(first_row_data, str):
-        dict_data = ast.literal_eval(first_row_data)
-    else:
-        dict_data = first_row_data  # 假定输入的就是字典格式
-
-    keys = list(dict_data.keys())
-    df = pd.DataFrame(columns=keys)
-
-    for i in range(len(data)):
-        row_data = data.iloc[i, 0]
-        if isinstance(row_data, str):
-            row_data = ast.literal_eval(row_data)
-        temp_df = pd.DataFrame([row_data])
-        df = pd.concat([df, temp_df], ignore_index=True)
-
-    df.to_excel(file_name, index=False)
-
+    data.to_excel(file_name, index=False)
+    return data
 
 def parameter_optimization(paras_list, processes=2):
-    pool = multiprocessing.Pool(processes)  # 根据系统性能调整进程数
-    results = []
-    pbar = tqdm(total=len(paras_list), desc="Optimizing")
+    with ProcessPoolExecutor(max_workers=processes) as executor:
+        futures = {executor.submit(run_strategy, params): params for params in paras_list}
+        results = []
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if isinstance(result, dict) and 'sharp_ratio' in result:
+                    results.append(result)
+                else:
+                    raise ValueError("Result is not a dictionary with a 'sharp_ratio' key")
+            except Exception as exc:
+                print(f"任务产生异常: {exc}")
+        return results
 
-    def update(*args):
-        pbar.update()
+# 函数：执行参数优化
+def optimize_and_save(paras_list, save_path,  processes=8):
+    results = parameter_optimization(paras_list, processes)
+    process_and_save_data(results, save_path)
 
-    for params in paras_list:
-        result = pool.apply_async(run_strategy, args=(params,), callback=update)
-        results.append(result)
-    pool.close()
-    pool.join()
-    pbar.close()
-    return [result.get() for result in results]
+# 函数：重新运行优化对于空的或为0的sharp_ratio
+def rerun_optimization_for_empty_or_zero_sharp_ratio(file_path):
+    data = pd.read_excel(file_path)
+    mask = data['sharp_ratio'].isnull() | (data['sharp_ratio'] == 0)
+    fail_count = 0
+
+    while not data.loc[mask].empty:
+        if fail_count >= 10:
+            raise Exception("连续十次尝试后，仍有sharp_ratio为空或为0的行，中断运行。")
+
+        paras_list = data.loc[mask].to_dict('records')
+        new_results = parameter_optimization(paras_list, processes=8)
+
+        # 确保我们处理的是字典列表
+        if all(isinstance(result, dict) for result in new_results):
+            for idx, result in enumerate(new_results):
+                # 确保每个结果包含 'sharp_ratio'
+                if 'sharp_ratio' in result:
+                    # 将新结果填充到原始数据中,整行都要覆盖
+                    data.loc[data.index[mask][idx], :] = pd.Series(result)
+                else:
+                    raise KeyError("Expected 'sharp_ratio' in the result dictionaries")
+        else:
+            raise TypeError("Expected a list of dictionaries from parameter_optimization")
+
+        mask = data['sharp_ratio'].isnull() | (data['sharp_ratio'] == 0)
+        fail_count += 1
+
+    data.to_excel(file_path, index=False)
 
 
 if __name__ == '__main__':
-    # 贵州茅台
-    # 证券代码: 600519
-    # 上市地: 上海证券交易所
-    # 宁德时代
-    # 证券代码: 300750
-    # 上市地: 深圳证券交易所
-    # 中国平安
-    # 证券代码: 601318
-    # 上市地: 上海证券交易所
-    # 招商银行
-    # 证券代码: 600036
-    # 上市地: 上海证券交易所
-    # 五粮液
-    # 证券代码: 000858
-    # 上市地: 深圳证券交易所
-    # 隆基绿能
-    # 证券代码: 601012
-    # 上市地: 上海证券交易所
-    # 美的集团
-    # 证券代码: 000333
-    # 上市地: 深圳证券交易所
-    # 长江电力
-    # 证券代码: 600900
-    # 上市地: 上海证券交易所
-    # 兴业银行
-    # 证券代码: 601166
-    # 上市地: 上海证券交易所
-    # 比亚迪
-    # 证券代码: 002594
-    # 上市地: 深圳证券交易所
+
 
     # symbols = ['SHSE.600519', 'SZSE.300750', 'SHSE.601318', 'SHSE.600036', 'SZSE.000858', 'SHSE.601012', 'SZSE.000333','SHSE.600900', 'SHSE.601166', 'SZSE.002594']
     symbols = ['SHSE.510300']
+    sets = ['val','test']
     # 参数列表，可以是从配置文件读取的
     paras_list = [
-        {'symbol':symbol,'target_T': target_T, 'threshold': threshold}
+        {'symbol':symbol,'set': set,'T': T, 'threshold': threshold}
         # for target_T in xgb_T_values
-
         for symbol in symbols
-        for target_T in [1,2,3,4,5]
+        for set in sets
+        for T in xgb_T_values
         for threshold in np.arange(0.001, 0.002, 0.001)
     ]
-    optimization_results = parameter_optimization(paras_list, processes=3)
+    # 保存路径
+    save_path = f'../results/XGBoost_FLIXNet/LSTM_XGBoost_backtest_{config_id}.xlsx'
 
-    # process_and_save_data(optimization_results, f'../results/combined_model/xgb_test_strategy_{config_id}.xlsx')
-    process_and_save_data(optimization_results, f'../results/XGBoost_FLIXNet/xgb_val_backtest_{config_id}.xlsx')
-    print(f"所有策略已经运行完毕! 结果保存在'../results/XGBoost_FLIXNet/xgb_val_backtest_{config_id}.xlsx'")
+    # 第一次运行优化并保存
+    optimize_and_save(paras_list, save_path,8)
+
+    # 检查并重新运行空的或为0的sharp_ratio
+
+    rerun_optimization_for_empty_or_zero_sharp_ratio(save_path)
+    print(f"所有策略已经运行完毕! 结果保存在{save_path}中！")
+

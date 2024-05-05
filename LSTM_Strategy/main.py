@@ -55,7 +55,6 @@ def algo(context):
     # print(str(now) + "\n")
     # try:
     predictied_trend = context.Predictied_trends['Y_pred'][context.i]
-    # predictied_trend = 2
     context.i = context.i + 1
 
     # 若预测值为上涨则买入
@@ -247,19 +246,19 @@ def process_and_save_data(optimization_results, file_name):
 
 if __name__ == '__main__':
     # 参数列表，可以是从配置文件读取的
-    sets = ['val']
+    sets = ['val','test']
 
     paras_list = [
         {'set': set, 'T': T, 'threshold': threshold}
         for set in sets
         # for T in T_values
-        for T in [9,24]
+        for T in [9, 17, 26, 6, 14, 16, 18, 19, 23, 24, 26, 27]
         # for threshold in np.arange(0.0001, 0.0035, 0.0005)
         for threshold in np.arange(0.001, 0.002, 0.001)
 
     ]
     optimization_results = parameter_optimization(paras_list, processes=8)
-    savePath = f'../results/LSTM/lstm_val_backtest_{config_id}_support.xlsx'
+    savePath = f'../results/LSTM/lstm_backtest_{config_id}_support.xlsx'
     # process_and_save_data(optimization_results, f'../results/no_kmeans/optimization_results_{config_id}.xlsx')
     process_and_save_data(optimization_results, savePath)
     print(f"所有策略已经运行完毕! 结果保存在{savePath}中！")

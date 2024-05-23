@@ -49,7 +49,7 @@ def prepare_data(symbol, start_date, end_date, T, window_size):
     # print(
     #     f"Preparing data for symbol: {symbol}, start_date: {start_date}, end_date: {end_date}, T: {T}, window_size: {window_size}")
     # 设置token
-    set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
+    set_token('83c40528129b255e6b47647af6cb853b008ca739')
     data = get_common_data(symbol, my_get_previous_n_trading_date(start_date, counts=window_size), end_date, T)
     # 此时data的长度大于后面的Y，多余的一个window_size的数据，后面data_for_lstm会处理掉
     # 所以dateIndex要丢掉前window_size个数据
@@ -497,6 +497,41 @@ def get_lstm_score_series(set='val', updated=False):
     score_series.name = 'lstm_Score'
 
     return score_series
+
+# def train_lstm_model(T,threshold):
+#     """
+#     返回给定T、threshold，以及函数外部的其他参数全局变量下的最佳lstm模型
+#     """
+#
+#     # 定义模型保存目录
+#     model_save_dir = 'lstm_models_' + str(config_id)
+#
+#     results_path = f'../results/bestLSTMmodels_results/best_models_results_{config_id}.xlsx'
+#
+#     if __name__ == "__main__":
+#         main()  # 训练给定参数组合下的一系列模型
+#
+#     # 读取最佳模型的结果
+#     best_models_results = pd.read_excel(results_path)
+#
+#     # 如果T==None，则返回所有模型中最佳的模型
+#     if T is None:
+#         best_model = best_models_results.loc[best_models_results['best_val_loss'].idxmin()]
+#     else:
+#         # 否则返回T等于指定值的最佳模型
+#         best_model = best_models_results.loc[
+#             best_models_results[best_models_results['T'] == T]['best_val_loss'].idxmin()]
+#
+#     # 返回一个字典，包含最佳模型的地址及其超参数
+#     return {
+#         'T': best_model['T'],
+#         'window_size': best_model['window_size'],
+#         'hidden_dim': best_model['hidden_dim'],
+#         'num_layers': best_model['num_layers'],
+#         'model_path': best_model['best_model_path'],
+#         # 'val_r2': lstm_evaluate(best_model, set="val", only_r2=True),
+#         'val_my_score': lstm_evaluate_classify(best_model, set="val"),
+#     }
 
 symbol = 'SHSE.510300'
 

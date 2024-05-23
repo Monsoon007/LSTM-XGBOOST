@@ -20,7 +20,7 @@ from model.LSTM_base_model import LSTMModel, prepare_data, symbol, train_start_d
 from torch.utils.tensorboard import SummaryWriter
 
 
-def lstm_to_xgboost(start_date, end_date, target_T,symbol='SHSE.510300'):
+def lstm_to_xgboost(start_date, end_date, target_T, symbol='SHSE.510300'):
     data = get_common_data(symbol, start_date, end_date, target_T)
 
     # 取Y为data的最后一列
@@ -69,7 +69,7 @@ def train_xgboost_reg(target_T=7):
 
     # XGBoost的参数，包括使用GPU的配置
     param = {
-        'max_depth': 5,  # 树的最大深度
+        'max_depth': 30,  # 树的最大深度
         'eta': 0.3,  # 学习率
         'objective': 'reg:squarederror',  # 回归任务的损失函数类型
         'eval_metric': 'rmse',  # 评估指标为均方根误差
@@ -146,12 +146,12 @@ def train_xgboost_classify(target_T=7):
     plt.close()
 
 
-def xgb_predict(target_T, start_date, end_date,symbol='SHSE.510300'):
+def xgb_predict(target_T, start_date, end_date, symbol='SHSE.510300'):
     """
     返回Y_true, Y_pred
     """
     # 准备数据
-    X, Y_true = lstm_to_xgboost(start_date, end_date, target_T,symbol=symbol)
+    X, Y_true = lstm_to_xgboost(start_date, end_date, target_T, symbol=symbol)
     # 加载模型
     bst = xgb.Booster()
 
@@ -165,7 +165,7 @@ def xgb_predict(target_T, start_date, end_date,symbol='SHSE.510300'):
     # 将数据转换为DMatrix对象，XGBoost专用的数据结构
     dtest = xgb.DMatrix(X)
     # 预测
-    Y_pred = bst.predict(dtest) #此时输出为N行三列，每一行代表一个样本，三列分别代表三个类别的概率
+    Y_pred = bst.predict(dtest)  #此时输出为N行三列，每一行代表一个样本，三列分别代表三个类别的概率
     #转换为一列，即选择概率最大的为答案
     Y_pred = np.argmax(Y_pred, axis=1)
     # 合并为DataFrame
@@ -225,9 +225,9 @@ def xgb_evaluate_classify(target_T, set="val"):
         start_date = train_start_date
         end_date = train_end_date
         pathStr = 'Train'
-    Y_true, Y_pred = xgb_predict(target_T, start_date, end_date)
+    df = xgb_predict(target_T, start_date, end_date)
 
-    return calculate_performance_score(Y_true, Y_pred)
+    return calculate_performance_score(df['Y_true'], df['Y_pred'])
 
 
 def get_xgb_r2_dict(set='val', updated=False):
@@ -291,6 +291,7 @@ def get_xgb_score_series(set='val', updated=False):
 
     return score_series
 
+
 bestlstmsPath = f'../results/XGBoost_FLIXNet/best_lstms.xlsx'
 # 检查是否存在
 if os.path.exists(bestlstmsPath):
@@ -306,7 +307,6 @@ else:
 xgb_T_values = list(np.arange(1, 31))
 modelDirectory = f'../model/xgb_models_{config_id}'
 
-
 if __name__ == '__main__':
     # 创建模型文件夹
     if not os.path.exists(modelDirectory):
@@ -316,4 +316,4 @@ if __name__ == '__main__':
         if os.path.exists(f'{modelDirectory}/xgb_model_{target_T}.json'):
             continue
         else:
-            train_xgboost_classify(target_T)
+            train_xgboost_reg(target_T)

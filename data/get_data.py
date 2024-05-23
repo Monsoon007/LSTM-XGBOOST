@@ -176,9 +176,9 @@ def my_get_next_n_trading_date(date, counts=1, exchange='SHSE'):
     return get_next_n_trading_dates(exchange,date,counts)[-1]
 
 
-def get_common_data(symbol, start_date, end_date, T,threshold=0.001):
+def get_common_data(symbol, start_date, end_date, T=3,threshold=0.001):
     # 设置token
-    set_token('9c0950e38c59552734328ad13ad93b6cc44ee271')
+    set_token('83c40528129b255e6b47647af6cb853b008ca739')
     macro_data = pd.read_excel('../data/macro.xlsx')
     # date作为索引
     macro_data.set_index('date', inplace=True)
@@ -235,11 +235,37 @@ def get_common_data(symbol, start_date, end_date, T,threshold=0.001):
     data = data[cols]
     return data
 
-set_token('9c0950e38c59552734328ad13ad93b6cc44ee271') # 本数据获取代码，依赖掘金客户端提供的接口，这是需要设置的token
+set_token('83c40528129b255e6b47647af6cb853b008ca739') # 本数据获取代码，依赖掘金客户端提供的接口，这是需要设置的token
+
+
+def get_return_data(symbol, start_date, end_date, T=3):
+    # 设置token
+    set_token('83c40528129b255e6b47647af6cb853b008ca739')
+    max_lead = 120
+    # 由于MA_120,EMA_120,avg_daily_return_120,AR,BR需要120天的数据，所以需要提前120天
+    leadStart = my_get_previous_n_trading_date(start_date, counts=max_lead)
+
+    # 由于需要计算未来T日的平均日收益率，所以end_date需要推迟T天
+    forwardEnd = my_get_next_n_trading_date(end_date, counts=T)
+
+    trade_data = history(symbol, frequency='1d', start_time=leadStart, end_time=forwardEnd, fill_missing='last',
+                         df=True)
+    trade_data.drop(['symbol', 'eob', 'frequency', 'position'], axis=1, inplace=True)
+    # 将'bob'去时区化后作为索引
+    trade_data.set_index('bob', inplace=True)
+    # 将data的索引设置为tz-naive
+    trade_data.index = trade_data.index.tz_localize(None)
+    data = trade_data
+    add_return_column(data, T)
+    data = data[start_date:end_date]
+    return data
 
 if __name__ == '__main__':
     # 获取数据
     data = get_common_data('SHSE.510300', '2019-03-01', '2020-03-31', 3)
-
+    returns = get_return_data('SHSE.510300', '2019-03-01', '2020-03-31', 3)
     print(data.info())
     print(data.columns)
+
+    print(returns.info())
+    print(returns.columns)
